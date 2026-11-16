@@ -144,6 +144,25 @@ use a runtime adapter to call `getRpm()` or `isStopped()` through the interface.
 For example, `printRpm(borrow(Rotatable, source))` works, while `printRpm(source)`
 does not because the vendor type has no `getRpm()` member.
 
+To map a family of class template specializations, pass the template declaration
+and target type as separate parenthesized arguments. For a vendor type
+`Motor<Speed, Channels>` that exposes an `rpm` field, the mapping can cover every
+positive channel count:
+
+```cpp
+impl(Rotatable,
+     (template<class Speed, std::size_t Channels> requires (Channels > 0)),
+     (vendor::Motor<Speed, Channels>)) {
+    static float getRpm(const vendor::Motor<Speed, Channels>& motor) {
+        return static_cast<float>(motor.rpm);
+    }
+};
+```
+
+Include the mapping before the first concept check or adapter call for a matching
+type. A two-argument `impl(Rotatable, ConcreteType)` can specialize an individual
+type and takes precedence over a matching partial specialization.
+
 ## Borrowing, owning, and runtime dispatch
 
 ```cpp

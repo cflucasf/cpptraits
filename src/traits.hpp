@@ -789,11 +789,21 @@ namespace cpptraits_detail {
 // ---- Public entry points. ----
 // implements(Name) supplies a public interface base; the caller supplies ':'.
 // Merge/clone traits require impl instead, because their mappings name concrete T.
-// impl(Name, Type) specializes the mapping template; the user's struct body
-// provides its static functions. It adds nothing to Type itself. Declare it in
-// the trait's namespace or an enclosing namespace, as C++ specialization requires.
+// impl(Name, Type) defines a full specialization. The three-argument form
+// supplies a parenthesized template declaration and target type for a partial
+// specialization. Declare either form in the trait's namespace or an enclosing
+// namespace, as C++ specialization requires.
 #define implements(Name) public Name##_cpptraits_detail::cpptraits_native_interface<>
-#define impl(Name, Type) template<> struct Name##_cpptraits_detail::cpptraits_implementation<Type>
+#define CPPTRAITS_IMPL_EXACT(Scope, Type) \
+    template<> struct Scope::cpptraits_implementation<CPPTRAITS_UNPAREN Type>
+#define CPPTRAITS_IMPL_TEMPLATE(Scope, Declaration, Type) \
+    CPPTRAITS_TYPE(CPPTRAITS_UNPAREN Declaration) \
+    struct Scope::cpptraits_implementation<CPPTRAITS_TYPE(Type)>
+#define CPPTRAITS_SELECT_IMPL(Selected, ...) Selected
+// Keep the second argument grouped when a type macro expands to tokens with commas.
+#define impl(Name, TypeOrDeclaration, ...) \
+    CPPTRAITS_SELECT_IMPL(__VA_OPT__(CPPTRAITS_IMPL_TEMPLATE,) CPPTRAITS_IMPL_EXACT)( \
+        Name##_cpptraits_detail, (TypeOrDeclaration) __VA_OPT__(, __VA_ARGS__))
 
 // dyn names the generated interface type; it does not create an object.
 // Qualified names work: dyn(app::Rotatable) selects the interface in
