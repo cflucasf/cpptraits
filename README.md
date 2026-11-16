@@ -144,6 +144,13 @@ use a runtime adapter to call `getRpm()` or `isStopped()` through the interface.
 For example, `printRpm(borrow(Rotatable, source))` works, while `printRpm(source)`
 does not because the vendor type has no `getRpm()` member.
 
+To call a required operation directly on a mapped type, use
+`trait_call(Rotatable, getRpm, source)`. CppTraits infers the receiver type and
+calls the static overload that matches the trait signature. This works with
+both fixed signatures and signatures that use associated types. Native types
+using `implements` call their own members, such as `motor.getRpm()`. Default
+and concrete operations use the runtime interface.
+
 To map a family of class template specializations, pass the template declaration
 and target type as separate parenthesized arguments. For a vendor type
 `Motor<Speed, Channels>` that exposes an `rpm` field, the mapping can cover every
@@ -440,9 +447,7 @@ that the alias is public and that both static functions match after substituting
 For example, a mapping with `Item = int` is rejected if `peek()` returns
 `const double*`, even if `next()` correctly returns `std::optional<int>`.
 
-Use `trait_call(Iterator, next, cursor)` to invoke a required operation on an
-external mapping for a trait with associated types. CppTraits infers the
-receiver type and calls the mapping overload that matches the trait signature.
+An external iterator mapping can be called with `trait_call(Iterator, next, cursor)`.
 Use `trait_mapping_t(Iterator, I)` when you need the validated mapping type
 itself, for example to read its `Item` alias:
 

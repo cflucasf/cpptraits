@@ -603,6 +603,32 @@ namespace cpptraits_detail {
 #define CPPTRAITS_FORWARD_METHOD(Kind, ...) \
     CPPTRAITS_CAT(CPPTRAITS_FORWARD_, Kind)(__VA_ARGS__)
 
+#define CPPTRAITS_STATIC_SIGNATURE(Class, Return, Parameters, Qualifiers, Self) \
+    typename ::cpptraits_detail::implementation_signature< \
+        CPPTRAITS_TYPE(Return) (Class::*) Parameters Qualifiers, Self>::type
+
+// Expose the declared overloads and call the exact mapping function selected
+// during validation. A const operation can be called on a const receiver even
+// when other methods require a mutable receiver.
+#define CPPTRAITS_MAPPED_CALL_POINTER(Return, Parameters, Qualifiers) \
+    CPPTRAITS_STATIC_SIGNATURE(cpptraits_mapped_calls, Return, Parameters, Qualifiers, CppTraitsSelf)
+#define CPPTRAITS_MAPPED_CALL_SIGNATURE(Return, Parameters, Qualifiers) \
+    ::cpptraits_detail::mapped_function< \
+        CPPTRAITS_MAPPED_CALL_POINTER(Return, Parameters, Qualifiers)>
+#define CPPTRAITS_MAPPED_CALL_REQUIRED(Return, Method, Parameters, Arguments, Qualifiers, Body) \
+    static CPPTRAITS_TYPE(Return) Method( \
+        typename CPPTRAITS_MAPPED_CALL_SIGNATURE(Return, Parameters, Qualifiers)::receiver cpptraitsReceiver \
+        CPPTRAITS_EXTRA_ARGUMENTS Parameters) \
+        noexcept(CPPTRAITS_MAPPED_CALL_SIGNATURE(Return, Parameters, Qualifiers)::is_noexcept) { \
+        return static_cast<CPPTRAITS_MAPPED_CALL_POINTER(Return, Parameters, Qualifiers)>( \
+            &CppTraitsImpl::Method)(cpptraitsReceiver CPPTRAITS_EXTRA_ARGUMENTS Arguments); \
+    }
+#define CPPTRAITS_MAPPED_CALL_ASSOCIATED(...)
+#define CPPTRAITS_MAPPED_CALL_DEFAULT(...)
+#define CPPTRAITS_MAPPED_CALL_MERGE(...)
+#define CPPTRAITS_MAPPED_CALL_CLONE(...)
+#define CPPTRAITS_MAPPED_CALL(Kind, ...) CPPTRAITS_MAPPED_CALL_##Kind(__VA_ARGS__)
+
 // ---- Build the trait's concept, runtime interface, and adapters. ----
 // trait(Rotatable, ...) puts generated types in Rotatable_cpptraits_detail;
 // dyn(Rotatable) selects its interface. The numbered steps below generate:
@@ -669,6 +695,11 @@ namespace cpptraits_detail {
         /* A raw mapped T still needs an adapter for interface conversion. */       \
         template<class T> concept cpptraits_satisfied =                           \
             cpptraits_runtime_compatible<T> || cpptraits_has_implementation<T>;   \
+        template<class CppTraitsSelf> requires cpptraits_has_implementation<CppTraitsSelf> \
+        struct cpptraits_mapped_calls {                                           \
+            using CppTraitsImpl = cpptraits_implementation<CppTraitsSelf>;         \
+            CPPTRAITS_METHODS(CPPTRAITS_MAPPED_CALL, __VA_ARGS__)                   \
+        };                                                                        \
         /* 5: Store an owned value; let the merge helper access it privately. */    \
         template<class T> class cpptraits_owning_adapter                          \
             : public cpptraits_adapter_base<T, cpptraits_owning_adapter<T>> {       \
@@ -763,8 +794,7 @@ namespace cpptraits_detail {
 #define CPPTRAITS_ASSOCIATED_DECLARE(Kind, ...) CPPTRAITS_ASSOCIATED_DECLARE_##Kind(__VA_ARGS__)
 
 #define CPPTRAITS_ASSOCIATED_SIGNATURE(Return, Parameters, Qualifiers, Self) \
-    typename ::cpptraits_detail::implementation_signature< \
-        CPPTRAITS_TYPE(Return) (cpptraits_contract::*) Parameters Qualifiers, Self>::type
+    CPPTRAITS_STATIC_SIGNATURE(cpptraits_contract, Return, Parameters, Qualifiers, Self)
 #define CPPTRAITS_ASSOCIATED_REQUIRE_RECEIVER(Return, Parameters, Qualifiers) \
     requires ::std::same_as< \
         CPPTRAITS_ASSOCIATED_SIGNATURE(Return, Parameters, Qualifiers, CppTraitsSelf), \
@@ -787,26 +817,6 @@ namespace cpptraits_detail {
 #define CPPTRAITS_ASSOCIATED_NATIVE_MERGE(...)
 #define CPPTRAITS_ASSOCIATED_NATIVE_CLONE(...)
 #define CPPTRAITS_ASSOCIATED_NATIVE(Kind, ...) CPPTRAITS_ASSOCIATED_NATIVE_##Kind(__VA_ARGS__)
-
-// Expose the declared overloads and call the exact mapping function selected
-// during validation. A const operation can be called on a const receiver even
-// when other methods require a mutable receiver.
-#define CPPTRAITS_ASSOCIATED_CALL_SIGNATURE(Return, Parameters, Qualifiers) \
-    ::cpptraits_detail::mapped_function< \
-        CPPTRAITS_ASSOCIATED_SIGNATURE(Return, Parameters, Qualifiers, CppTraitsSelf)>
-#define CPPTRAITS_ASSOCIATED_CALL_REQUIRED(Return, Method, Parameters, Arguments, Qualifiers, Body) \
-    static CPPTRAITS_TYPE(Return) Method( \
-        typename CPPTRAITS_ASSOCIATED_CALL_SIGNATURE(Return, Parameters, Qualifiers)::receiver cpptraitsReceiver \
-        CPPTRAITS_EXTRA_ARGUMENTS Parameters) \
-        noexcept(CPPTRAITS_ASSOCIATED_CALL_SIGNATURE(Return, Parameters, Qualifiers)::is_noexcept) { \
-        return static_cast<CPPTRAITS_ASSOCIATED_SIGNATURE(Return, Parameters, Qualifiers, CppTraitsSelf)>( \
-            &CppTraitsImpl::Method)(cpptraitsReceiver CPPTRAITS_EXTRA_ARGUMENTS Arguments); \
-    }
-#define CPPTRAITS_ASSOCIATED_CALL_ASSOCIATED(...)
-#define CPPTRAITS_ASSOCIATED_CALL_DEFAULT(...)
-#define CPPTRAITS_ASSOCIATED_CALL_MERGE(...)
-#define CPPTRAITS_ASSOCIATED_CALL_CLONE(...)
-#define CPPTRAITS_ASSOCIATED_CALL(Kind, ...) CPPTRAITS_ASSOCIATED_CALL_##Kind(__VA_ARGS__)
 
 // The first interface argument lets each associated descriptor add a type with
 // a leading comma. The public native alias supplies that argument internally.
@@ -838,8 +848,8 @@ namespace cpptraits_detail {
             static constexpr bool native = requires {                            \
                 CPPTRAITS_METHODS(CPPTRAITS_ASSOCIATED_NATIVE, __VA_ARGS__)         \
             };                                                                    \
-            template<class CppTraitsSelf> struct cpptraits_call_set {             \
-                CPPTRAITS_METHODS(CPPTRAITS_ASSOCIATED_CALL, __VA_ARGS__)           \
+            template<class CppTraitsSelf> struct cpptraits_mapped_calls {          \
+                CPPTRAITS_METHODS(CPPTRAITS_MAPPED_CALL, __VA_ARGS__)               \
             };                                                                    \
         };                                                                        \
         template<class CppTraitsSelf> concept cpptraits_runtime_compatible =       \
@@ -861,7 +871,7 @@ namespace cpptraits_detail {
         using cpptraits_mapped_implementation = cpptraits_mapping<T>;              \
         template<class T> requires cpptraits_has_implementation<T>                \
         using cpptraits_mapped_calls =                                             \
-            typename cpptraits_contract<cpptraits_mapping<T>>::template cpptraits_call_set<T>; \
+            typename cpptraits_contract<cpptraits_mapping<T>>::template cpptraits_mapped_calls<T>; \
     }                                                                             \
     template<class CppTraitsSelf> concept Name = Scope::cpptraits_satisfied<CppTraitsSelf>
 
