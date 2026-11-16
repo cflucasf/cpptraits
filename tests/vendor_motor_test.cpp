@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstddef>
 #include <memory>
 #include <numbers>
 #include <type_traits>
@@ -24,6 +25,11 @@ concept CanBox = requires(T&& object) {
     box(Rotatable, std::forward<T>(object));
 };
 
+template<class T>
+concept CanCallGetRpm = requires(T& object) {
+    { trait_call(Rotatable, getRpm, object) } -> std::same_as<float>;
+};
+
 using MoveOnlyRpm = std::unique_ptr<int>;
 impl(Rotatable, MoveOnlyRpm) {
     static float getRpm(const MoveOnlyRpm& rpm) {
@@ -39,6 +45,39 @@ impl(Rotatable, SharedMotor) {
         return static_cast<float>(*motor.rpm);
     }
 };
+
+namespace vendor {
+template<class Speed, std::size_t Channels>
+struct MultiChannelMotor {
+    Speed rpm;
+};
+}
+
+impl(Rotatable,
+     (template<class Speed, std::size_t Channels> requires (Channels > 0)),
+     (vendor::MultiChannelMotor<Speed, Channels>)) {
+    static float getRpm(const vendor::MultiChannelMotor<Speed, Channels>& motor) {
+        return static_cast<float>(motor.rpm);
+    }
+    static float getRpm(vendor::MultiChannelMotor<Speed, Channels>&) { return -1.0f; }
+};
+
+using CalibratedMotor = vendor::MultiChannelMotor<int, 2>;
+impl(Rotatable, CalibratedMotor) {
+    static float getRpm(const CalibratedMotor& motor) {
+        return static_cast<float>(motor.rpm + 100);
+    }
+};
+
+using UnmappedMotor = vendor::MultiChannelMotor<int, 0>;
+static_assert(Rotatable<vendor::MultiChannelMotor<double, 1>>);
+static_assert(Rotatable<CalibratedMotor> && Rotatable<const CalibratedMotor>);
+static_assert(!Rotatable<UnmappedMotor>);
+static_assert(!CanAdapt<UnmappedMotor> && !CanBorrow<UnmappedMotor&> &&
+              !CanBox<UnmappedMotor>);
+static_assert(CanCallGetRpm<vendor::Motor> && CanCallGetRpm<const CalibratedMotor>);
+static_assert(CanCallGetRpm<vendor::MultiChannelMotor<double, 1>>);
+static_assert(!CanCallGetRpm<UnmappedMotor> && !CanCallGetRpm<dyn(Rotatable)>);
 
 trait(Mutable, method(void, set, (param(int, value)), ));
 impl(Mutable, int) {
@@ -127,6 +166,19 @@ int main()
 {
     if (!optionalVendorOverride()) {
         return 9;
+    }
+
+    vendor::MultiChannelMotor<double, 1> genericMotor{250.5};
+    auto genericBorrow = borrow(Rotatable, genericMotor);
+    auto genericOwned = adapt(Rotatable, genericMotor);
+    auto genericBox = box(Rotatable, genericMotor);
+    genericMotor.rpm = 500;
+    const CalibratedMotor calibrated{250};
+    if (genericBorrow.getRpm() != 500.0f || genericOwned.getRpm() != 250.5f ||
+        genericBox->getRpm() != 250.5f || borrow(Rotatable, calibrated).getRpm() != 350.0f ||
+        trait_call(Rotatable, getRpm, genericMotor) != 500.0f ||
+        trait_call(Rotatable, getRpm, calibrated) != 350.0f) {
+        return 10;
     }
 
     vendor::Motor motor{2.0 * std::numbers::pi};

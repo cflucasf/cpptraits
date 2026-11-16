@@ -13,6 +13,8 @@ exit-status check (including in Release builds). Standard headers come before
 | `static_traits` | Plain compile-time constraints without interface inheritance |
 | `composition` | Two native traits combined with `composed_trait`, `borrow`, and `as` |
 | `concrete_methods` | Mapped merge and owning clone operations through fixed interfaces |
+| `class_template` | One constrained `impl` for a family of class template specializations |
+| `associated_types` | A native iterator that binds the shared `Item` of `peek()` and `next()` |
 
 ## Run from the repository root
 
@@ -21,6 +23,8 @@ exit-status check (including in Release builds). Standard headers come before
 ./run.sh                  # defaults to basic
 ./run.sh --list
 ./run.sh concrete_methods
+./run.sh class_template
+./run.sh associated_types
 ```
 
 Or use CMake directly:

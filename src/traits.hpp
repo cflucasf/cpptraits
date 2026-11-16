@@ -220,6 +220,15 @@ namespace cpptraits_detail {
         using type = R (*)(const T&, Args...) noexcept;
     };
 
+    template<class Pointer>
+    struct mapped_function;
+
+    template<class R, class Receiver, class... Args, bool Noexcept>
+    struct mapped_function<R (*)(Receiver, Args...) noexcept(Noexcept)> {
+        using receiver = Receiver;
+        static constexpr bool is_noexcept = Noexcept;
+    };
+
     // Merge methods receive an interface reference but need the wrapped 'const T&'.
     // 'Interface' is the generated runtime interface; 'T' is the type named by impl.
     // Owning and borrowing adapters for that 'Interface' and 'T' share this base, so
@@ -408,6 +417,20 @@ namespace cpptraits_detail {
 #define CPPTRAITS_METHODS(Generator, ...) \
     CPPTRAITS_EACH(CPPTRAITS_APPLY_METHOD, Generator, __VA_ARGS__)
 
+// An associated type has the same descriptor layout as a method. Markers expand
+// to 1, so the first token is 1 when present and the trailing 0 otherwise.
+#define associated_type(Name) (ASSOCIATED, , Name, , , , )
+#define CPPTRAITS_ASSOCIATED_MARKER_REQUIRED
+#define CPPTRAITS_ASSOCIATED_MARKER_DEFAULT
+#define CPPTRAITS_ASSOCIATED_MARKER_MERGE
+#define CPPTRAITS_ASSOCIATED_MARKER_CLONE
+#define CPPTRAITS_ASSOCIATED_MARKER_ASSOCIATED 1,
+#define CPPTRAITS_ASSOCIATED_MARKER(Kind, ...) CPPTRAITS_ASSOCIATED_MARKER_##Kind
+#define CPPTRAITS_FIRST(First, ...) First
+#define CPPTRAITS_HAS_ASSOCIATED_I(...) CPPTRAITS_FIRST(__VA_ARGS__ 0)
+#define CPPTRAITS_HAS_ASSOCIATED(...) \
+    CPPTRAITS_HAS_ASSOCIATED_I(CPPTRAITS_METHODS(CPPTRAITS_ASSOCIATED_MARKER, __VA_ARGS__))
+
 // ---- Descriptor consumers ----
 // Every macro receives the same seven fields:
 //   (Kind, Return, Method, Parameters, Arguments, Qualifiers, Body)
@@ -580,6 +603,32 @@ namespace cpptraits_detail {
 #define CPPTRAITS_FORWARD_METHOD(Kind, ...) \
     CPPTRAITS_CAT(CPPTRAITS_FORWARD_, Kind)(__VA_ARGS__)
 
+#define CPPTRAITS_STATIC_SIGNATURE(Class, Return, Parameters, Qualifiers, Self) \
+    typename ::cpptraits_detail::implementation_signature< \
+        CPPTRAITS_TYPE(Return) (Class::*) Parameters Qualifiers, Self>::type
+
+// Expose the declared overloads and call the exact mapping function selected
+// during validation. A const operation can be called on a const receiver even
+// when other methods require a mutable receiver.
+#define CPPTRAITS_MAPPED_CALL_POINTER(Return, Parameters, Qualifiers) \
+    CPPTRAITS_STATIC_SIGNATURE(cpptraits_mapped_calls, Return, Parameters, Qualifiers, CppTraitsSelf)
+#define CPPTRAITS_MAPPED_CALL_SIGNATURE(Return, Parameters, Qualifiers) \
+    ::cpptraits_detail::mapped_function< \
+        CPPTRAITS_MAPPED_CALL_POINTER(Return, Parameters, Qualifiers)>
+#define CPPTRAITS_MAPPED_CALL_REQUIRED(Return, Method, Parameters, Arguments, Qualifiers, Body) \
+    static CPPTRAITS_TYPE(Return) Method( \
+        typename CPPTRAITS_MAPPED_CALL_SIGNATURE(Return, Parameters, Qualifiers)::receiver cpptraitsReceiver \
+        CPPTRAITS_EXTRA_ARGUMENTS Parameters) \
+        noexcept(CPPTRAITS_MAPPED_CALL_SIGNATURE(Return, Parameters, Qualifiers)::is_noexcept) { \
+        return static_cast<CPPTRAITS_MAPPED_CALL_POINTER(Return, Parameters, Qualifiers)>( \
+            &CppTraitsImpl::Method)(cpptraitsReceiver CPPTRAITS_EXTRA_ARGUMENTS Arguments); \
+    }
+#define CPPTRAITS_MAPPED_CALL_ASSOCIATED(...)
+#define CPPTRAITS_MAPPED_CALL_DEFAULT(...)
+#define CPPTRAITS_MAPPED_CALL_MERGE(...)
+#define CPPTRAITS_MAPPED_CALL_CLONE(...)
+#define CPPTRAITS_MAPPED_CALL(Kind, ...) CPPTRAITS_MAPPED_CALL_##Kind(__VA_ARGS__)
+
 // ---- Build the trait's concept, runtime interface, and adapters. ----
 // trait(Rotatable, ...) puts generated types in Rotatable_cpptraits_detail;
 // dyn(Rotatable) selects its interface. The numbered steps below generate:
@@ -594,8 +643,8 @@ namespace cpptraits_detail {
 // CppTraitsImpl from the scopes generated below.
 // Define impl(Trait, T) before first checking or adapting T: a mapping checked
 // while incomplete cannot become valid later in the same compilation.
-#define trait(Name, ...)                                                           \
-    namespace Name##_cpptraits_detail {                                            \
+#define CPPTRAITS_TRAIT_0(Name, Scope, ...)                                         \
+    namespace Scope {                                                              \
         /* 1: Check method kinds, then declare the runtime interface. */            \
         inline constexpr bool cpptraits_has_concrete =                            \
             false CPPTRAITS_METHODS(CPPTRAITS_CONCRETE_FLAG, __VA_ARGS__);          \
@@ -609,7 +658,8 @@ namespace cpptraits_detail {
         /* 2: implements(Name) is allowed only without concrete methods. */         \
         /* The alias template checks this constraint when implements uses it. */   \
         /* Merge/clone obtain their concrete T from impl instead. */               \
-        template<class = void> requires (!cpptraits_has_concrete)                 \
+        template<class... CppTraitsBindings>                                      \
+            requires (!cpptraits_has_concrete && sizeof...(CppTraitsBindings) == 0) \
         using cpptraits_native_interface = cpptraits_interface_type;              \
         /* Only merge needs the helper that exposes the wrapped const T&. */       \
         template<class T, class Adapter>                                         \
@@ -645,6 +695,11 @@ namespace cpptraits_detail {
         /* A raw mapped T still needs an adapter for interface conversion. */       \
         template<class T> concept cpptraits_satisfied =                           \
             cpptraits_runtime_compatible<T> || cpptraits_has_implementation<T>;   \
+        template<class CppTraitsSelf> requires cpptraits_has_implementation<CppTraitsSelf> \
+        struct cpptraits_mapped_calls {                                           \
+            using CppTraitsImpl = cpptraits_implementation<CppTraitsSelf>;         \
+            CPPTRAITS_METHODS(CPPTRAITS_MAPPED_CALL, __VA_ARGS__)                   \
+        };                                                                        \
         /* 5: Store an owned value; let the merge helper access it privately. */    \
         template<class T> class cpptraits_owning_adapter                          \
             : public cpptraits_adapter_base<T, cpptraits_owning_adapter<T>> {       \
@@ -706,7 +761,123 @@ namespace cpptraits_detail {
         }                                                                         \
     }                                                                             \
     template<class CppTraitsSelf> concept Name =                                  \
-        Name##_cpptraits_detail::cpptraits_satisfied<CppTraitsSelf>
+        Scope::cpptraits_satisfied<CppTraitsSelf>
+
+// Associated signatures depend on the bindings supplied by a native base or a
+// mapping. Process type descriptors in declaration order, skipping methods.
+#define CPPTRAITS_ASSOCIATED_TYPES(Generate, ...) \
+    CPPTRAITS_EACH(CPPTRAITS_ASSOCIATED_TYPE, Generate, __VA_ARGS__)
+#define CPPTRAITS_ASSOCIATED_TYPE(Generate, Descriptor) \
+    CPPTRAITS_ASSOCIATED_TYPE_I(Generate, CPPTRAITS_UNPAREN Descriptor)
+#define CPPTRAITS_ASSOCIATED_TYPE_I(Generate, ...) CPPTRAITS_ASSOCIATED_TYPE_II(Generate, __VA_ARGS__)
+#define CPPTRAITS_ASSOCIATED_TYPE_II(Generate, Kind, Return, Name, ...) \
+    CPPTRAITS_ASSOCIATED_TYPE_##Kind(Generate, Name)
+#define CPPTRAITS_ASSOCIATED_TYPE_ASSOCIATED(Generate, Name) Generate(Name)
+#define CPPTRAITS_ASSOCIATED_TYPE_REQUIRED(Generate, Name)
+#define CPPTRAITS_ASSOCIATED_TYPE_DEFAULT(Generate, Name)
+#define CPPTRAITS_ASSOCIATED_TYPE_MERGE(Generate, Name)
+#define CPPTRAITS_ASSOCIATED_TYPE_CLONE(Generate, Name)
+
+#define CPPTRAITS_ASSOCIATED_PARAMETER(Name) , class CppTraitsBound_##Name
+#define CPPTRAITS_ASSOCIATED_BINDING(Name) using Name = CppTraitsBound_##Name;
+#define CPPTRAITS_ASSOCIATED_ARGUMENT(Name) , typename CppTraitsSelf::Name
+#define CPPTRAITS_ASSOCIATED_CHECK(Name) typename CppTraitsImpl::Name;
+#define CPPTRAITS_ASSOCIATED_ALIAS(Name) using Name = typename CppTraitsImpl::Name;
+
+#define CPPTRAITS_ASSOCIATED_DECLARE_REQUIRED CPPTRAITS_DECLARE_REQUIRED
+#define CPPTRAITS_ASSOCIATED_DECLARE_ASSOCIATED(...)
+#define CPPTRAITS_ASSOCIATED_DECLARE_UNSUPPORTED(...) \
+    static_assert(false, "Associated-type traits support required methods only");
+#define CPPTRAITS_ASSOCIATED_DECLARE_DEFAULT CPPTRAITS_ASSOCIATED_DECLARE_UNSUPPORTED
+#define CPPTRAITS_ASSOCIATED_DECLARE_MERGE CPPTRAITS_ASSOCIATED_DECLARE_UNSUPPORTED
+#define CPPTRAITS_ASSOCIATED_DECLARE_CLONE CPPTRAITS_ASSOCIATED_DECLARE_UNSUPPORTED
+#define CPPTRAITS_ASSOCIATED_DECLARE(Kind, ...) CPPTRAITS_ASSOCIATED_DECLARE_##Kind(__VA_ARGS__)
+
+#define CPPTRAITS_ASSOCIATED_SIGNATURE(Return, Parameters, Qualifiers, Self) \
+    CPPTRAITS_STATIC_SIGNATURE(cpptraits_contract, Return, Parameters, Qualifiers, Self)
+#define CPPTRAITS_ASSOCIATED_REQUIRE_RECEIVER(Return, Parameters, Qualifiers) \
+    requires ::std::same_as< \
+        CPPTRAITS_ASSOCIATED_SIGNATURE(Return, Parameters, Qualifiers, CppTraitsSelf), \
+        CPPTRAITS_ASSOCIATED_SIGNATURE(Return, Parameters, Qualifiers, ::std::remove_const_t<CppTraitsSelf>)>;
+#define CPPTRAITS_ASSOCIATED_METHOD_REQUIRED(Return, Method, Parameters, Arguments, Qualifiers, Body) \
+    CPPTRAITS_ASSOCIATED_REQUIRE_RECEIVER(Return, Parameters, Qualifiers) \
+    static_cast<CPPTRAITS_ASSOCIATED_SIGNATURE(Return, Parameters, Qualifiers, CppTraitsSelf)>( \
+        &CppTraitsImpl::Method);
+#define CPPTRAITS_ASSOCIATED_METHOD_ASSOCIATED(...)
+#define CPPTRAITS_ASSOCIATED_METHOD_DEFAULT(...)
+#define CPPTRAITS_ASSOCIATED_METHOD_MERGE(...)
+#define CPPTRAITS_ASSOCIATED_METHOD_CLONE(...)
+#define CPPTRAITS_ASSOCIATED_METHOD(Kind, ...) CPPTRAITS_ASSOCIATED_METHOD_##Kind(__VA_ARGS__)
+
+#define CPPTRAITS_ASSOCIATED_NATIVE_REQUIRED(Return, Method, Parameters, Arguments, Qualifiers, Body) \
+    CPPTRAITS_ASSOCIATED_REQUIRE_RECEIVER(Return, Parameters, Qualifiers) \
+    CPPTRAITS_REQUIRE_METHOD(REQUIRED, Return, Method, Parameters, Arguments, Qualifiers, Body)
+#define CPPTRAITS_ASSOCIATED_NATIVE_ASSOCIATED(...)
+#define CPPTRAITS_ASSOCIATED_NATIVE_DEFAULT(...)
+#define CPPTRAITS_ASSOCIATED_NATIVE_MERGE(...)
+#define CPPTRAITS_ASSOCIATED_NATIVE_CLONE(...)
+#define CPPTRAITS_ASSOCIATED_NATIVE(Kind, ...) CPPTRAITS_ASSOCIATED_NATIVE_##Kind(__VA_ARGS__)
+
+// The first interface argument lets each associated descriptor add a type with
+// a leading comma. The public native alias supplies that argument internally.
+// Reconstruct the expected base from T's public aliases to catch shadowed types.
+#define CPPTRAITS_TRAIT_1(Name, Scope, ...)                                         \
+    namespace Scope {                                                             \
+        template<class CppTraitsUnused                                            \
+            CPPTRAITS_ASSOCIATED_TYPES(CPPTRAITS_ASSOCIATED_PARAMETER, __VA_ARGS__)> \
+        struct cpptraits_bound_interface {                                        \
+            CPPTRAITS_ASSOCIATED_TYPES(CPPTRAITS_ASSOCIATED_BINDING, __VA_ARGS__)    \
+            virtual ~cpptraits_bound_interface() = default;                       \
+            CPPTRAITS_METHODS(CPPTRAITS_ASSOCIATED_DECLARE, __VA_ARGS__)            \
+        };                                                                        \
+        template<class... CppTraitsBindings>                                      \
+        using cpptraits_native_interface = cpptraits_bound_interface<void, CppTraitsBindings...>; \
+        template<class T> struct cpptraits_implementation;                        \
+        template<class CppTraitsImpl>                                             \
+        concept cpptraits_has_associated_types = requires {                       \
+            sizeof(CppTraitsImpl);                                                \
+            CPPTRAITS_ASSOCIATED_TYPES(CPPTRAITS_ASSOCIATED_CHECK, __VA_ARGS__)      \
+        };                                                                        \
+        template<class CppTraitsImpl> struct cpptraits_contract {                 \
+            CPPTRAITS_ASSOCIATED_TYPES(CPPTRAITS_ASSOCIATED_ALIAS, __VA_ARGS__)      \
+            template<class CppTraitsSelf>                                         \
+            static constexpr bool mapped = requires {                            \
+                CPPTRAITS_METHODS(CPPTRAITS_ASSOCIATED_METHOD, __VA_ARGS__)         \
+            };                                                                    \
+            template<class CppTraitsSelf>                                         \
+            static constexpr bool native = requires {                            \
+                CPPTRAITS_METHODS(CPPTRAITS_ASSOCIATED_NATIVE, __VA_ARGS__)         \
+            };                                                                    \
+            template<class CppTraitsSelf> struct cpptraits_mapped_calls {          \
+                CPPTRAITS_METHODS(CPPTRAITS_MAPPED_CALL, __VA_ARGS__)               \
+            };                                                                    \
+        };                                                                        \
+        template<class CppTraitsSelf> concept cpptraits_runtime_compatible =       \
+            requires {                                                            \
+                sizeof(CppTraitsSelf);                                            \
+                requires ::std::derived_from<CppTraitsSelf, cpptraits_bound_interface<void \
+                    CPPTRAITS_ASSOCIATED_TYPES(CPPTRAITS_ASSOCIATED_ARGUMENT, __VA_ARGS__)>>; \
+            } && cpptraits_contract<CppTraitsSelf>::template native<CppTraitsSelf>; \
+        template<class T> using cpptraits_mapping =                                \
+            cpptraits_implementation<::std::remove_const_t<T>>;                    \
+        template<class T> concept cpptraits_has_implementation =                  \
+            ::std::is_object_v<T> && !::std::is_volatile_v<T> &&                    \
+            cpptraits_has_associated_types<cpptraits_mapping<T>> &&                \
+            cpptraits_contract<cpptraits_mapping<T>>::template mapped<T>;          \
+        template<class T> concept cpptraits_satisfied =                            \
+            !::std::is_volatile_v<T> &&                                            \
+            (cpptraits_runtime_compatible<T> || cpptraits_has_implementation<T>);  \
+        template<class T> requires cpptraits_has_implementation<T>                \
+        using cpptraits_mapped_implementation = cpptraits_mapping<T>;              \
+        template<class T> requires cpptraits_has_implementation<T>                \
+        using cpptraits_mapped_calls =                                             \
+            typename cpptraits_contract<cpptraits_mapping<T>>::template cpptraits_mapped_calls<T>; \
+    }                                                                             \
+    template<class CppTraitsSelf> concept Name = Scope::cpptraits_satisfied<CppTraitsSelf>
+
+#define trait(Name, ...) \
+    CPPTRAITS_CAT(CPPTRAITS_TRAIT_, CPPTRAITS_HAS_ASSOCIATED(__VA_ARGS__))( \
+        Name, Name##_cpptraits_detail, __VA_ARGS__)
 
 // Define an ordinary C++20 concept, with no runtime interface or adapters.
 // The variadic constraint allows commas, such as in std::same_as<T, int>.
@@ -787,13 +958,30 @@ namespace cpptraits_detail {
     }
 
 // ---- Public entry points. ----
-// implements(Name) supplies a public interface base; the caller supplies ':'.
+// implements(Name, ...) supplies a public interface base. Bind associated types
+// in declaration order. The caller supplies ':'.
 // Merge/clone traits require impl instead, because their mappings name concrete T.
-// impl(Name, Type) specializes the mapping template; the user's struct body
-// provides its static functions. It adds nothing to Type itself. Declare it in
-// the trait's namespace or an enclosing namespace, as C++ specialization requires.
-#define implements(Name) public Name##_cpptraits_detail::cpptraits_native_interface<>
-#define impl(Name, Type) template<> struct Name##_cpptraits_detail::cpptraits_implementation<Type>
+// impl(Name, Type) defines a full specialization. The three-argument form
+// supplies a parenthesized template declaration and target type for a partial
+// specialization. Declare either form in the trait's namespace or an enclosing
+// namespace, as C++ specialization requires.
+#define implements(Name, ...) public Name##_cpptraits_detail::cpptraits_native_interface<__VA_ARGS__>
+#define CPPTRAITS_IMPL_EXACT(Scope, Type) \
+    template<> struct Scope::cpptraits_implementation<CPPTRAITS_UNPAREN Type>
+#define CPPTRAITS_IMPL_TEMPLATE(Scope, Declaration, Type) \
+    CPPTRAITS_TYPE(CPPTRAITS_UNPAREN Declaration) \
+    struct Scope::cpptraits_implementation<CPPTRAITS_TYPE(Type)>
+#define CPPTRAITS_SELECT_IMPL(Selected, ...) Selected
+// Keep the second argument grouped when a type macro expands to tokens with commas.
+#define impl(Name, TypeOrDeclaration, ...) \
+    CPPTRAITS_SELECT_IMPL(__VA_OPT__(CPPTRAITS_IMPL_TEMPLATE,) CPPTRAITS_IMPL_EXACT)( \
+        Name##_cpptraits_detail, (TypeOrDeclaration) __VA_OPT__(, __VA_ARGS__))
+
+// Access a validated mapping type, or invoke one of its declared operations.
+#define trait_mapping_t(Name, ...) Name##_cpptraits_detail::cpptraits_mapped_implementation<__VA_ARGS__>
+#define trait_call(Name, Method, Object, ...) \
+    Name##_cpptraits_detail::cpptraits_mapped_calls<::std::remove_cvref_t<decltype((Object))>>::Method( \
+        (Object) __VA_OPT__(, __VA_ARGS__))
 
 // dyn names the generated interface type; it does not create an object.
 // Qualified names work: dyn(app::Rotatable) selects the interface in

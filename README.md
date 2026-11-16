@@ -144,6 +144,32 @@ use a runtime adapter to call `getRpm()` or `isStopped()` through the interface.
 For example, `printRpm(borrow(Rotatable, source))` works, while `printRpm(source)`
 does not because the vendor type has no `getRpm()` member.
 
+To call a required operation directly on a mapped type, use
+`trait_call(Rotatable, getRpm, source)`. CppTraits infers the receiver type and
+calls the static overload that matches the trait signature. This works with
+both fixed signatures and signatures that use associated types. Native types
+using `implements` call their own members, such as `motor.getRpm()`. Default
+and concrete operations use the runtime interface.
+
+To map a family of class template specializations, pass the template declaration
+and target type as separate parenthesized arguments. For a vendor type
+`Motor<Speed, Channels>` that exposes an `rpm` field, the mapping can cover every
+positive channel count:
+
+```cpp
+impl(Rotatable,
+     (template<class Speed, std::size_t Channels> requires (Channels > 0)),
+     (vendor::Motor<Speed, Channels>)) {
+    static float getRpm(const vendor::Motor<Speed, Channels>& motor) {
+        return static_cast<float>(motor.rpm);
+    }
+};
+```
+
+Include the mapping before the first concept check or adapter call for a matching
+type. A two-argument `impl(Rotatable, ConcreteType)` can specialize an individual
+type and takes precedence over a matching partial specialization.
+
 ## Borrowing, owning, and runtime dispatch
 
 ```cpp
@@ -390,9 +416,52 @@ static_trait(CopyableRotation, T, Rotatable<T> && std::copyable<T>);
 Static traits can also check associated types, constants, static operations, and
 `requires` expressions. They do not generate runtime interfaces or factories.
 
+## Associated types
+
+An associated type lets an implementation supply one type shared by several operations.
+In this iterator, `peek()` borrows the current item without advancing, while
+`next()` returns an item by value and advances. Both operations must use the
+same `Item`.
+
+```cpp
+trait(Iterator,
+    associated_type(Item),
+    method(const Item*, peek, const noexcept),
+    method(std::optional<Item>, next, )
+);
+
+template<class T>
+struct ArrayIter : implements(Iterator, T) {
+    const T* peek() const noexcept override;
+    std::optional<T> next() override;
+};
+```
+
+`implements(Iterator, T)` binds `Item` to `T` in the interface and makes the
+alias available as `ArrayIter<T>::Item`. With multiple associated types, pass their
+bindings in declaration order. Call `iter.peek()` and `iter.next()` as ordinary
+members. See the [runnable iterator example](examples/associated_types/main.cpp).
+
+An external `impl` supplies `using Item = T;` in its mapping. CppTraits checks
+that the alias is public and that both static functions match after substituting it.
+For example, a mapping with `Item = int` is rejected if `peek()` returns
+`const double*`, even if `next()` correctly returns `std::optional<int>`.
+
+An external iterator mapping can be called with `trait_call(Iterator, next, cursor)`.
+Use `trait_mapping_t(Iterator, I)` when you need the validated mapping type
+itself, for example to read its `Item` alias:
+
+```cpp
+template<Iterator I>
+using mapped_item_t = typename trait_mapping_t(Iterator, I)::Item;
+```
+
+Traits with associated types support required `method(...)` descriptors.
+`dyn`, `borrow`, `adapt`, and `box` are available for fixed-interface traits.
+
 ## Supported scope
 
-- Up to **8 operations per trait** (ordinary, default, and concrete combined),
+- Up to **8 descriptors per trait** (methods and associated type declarations),
   **8 parameters per ordinary operation**, and **8 distinct
   ordinary traits per composition**. Nested runtime compositions are not supported.
 - Ref-qualified and volatile operations are not supported by external adapters.
@@ -422,6 +491,8 @@ See the [examples index](examples/README.md) for more guidance.
 | [static_traits](examples/static_traits/main.cpp) | Compile-time concrete-type contracts |
 | [composition](examples/composition/main.cpp) | Combine capabilities and select runtime interfaces |
 | [concrete_methods](examples/concrete_methods/main.cpp) | Same-type merge and owning runtime clone operations |
+| [class_template](examples/class_template/main.cpp) | One constrained mapping for a class template |
+| [associated_types](examples/associated_types/main.cpp) | A native iterator that binds its item type with `implements` |
 
 ## Build and run this repository
 
