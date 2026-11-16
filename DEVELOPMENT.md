@@ -56,23 +56,20 @@ or an earlier implementation's results.
 
 ### Regression coverage
 
-A default top-level build registers **17 tests**: ten dedicated test executables
-and seven example smoke tests. Dedicated tests require both `BUILD_TESTING` and
+A default top-level build registers **19 tests**: ten dedicated test executables
+and nine example smoke tests. Dedicated tests require both `BUILD_TESTING` and
 `CPPTRAITS_BUILD_TESTS`; example smoke tests require both `BUILD_TESTING` and
 `CPPTRAITS_BUILD_EXAMPLES`. The optional `CPPTRAITS_TEST_CLONE_NO_RTTI` CMake
 option is OFF by default; enabling it adds `concrete_clone_no_rtti` when dedicated
-tests are enabled, for **18 tests** with the other defaults unchanged. All 17
-default tests pass in Debug and Release after the single-header consolidation.
-The optional no-RTTI test, isolated-header compilation, and a separate CMake
-consumer linking `CppTraits::CppTraits` also pass. The three opt-in compile-failure
-checks below remain part of the manual validation workflow.
+tests are enabled, for **20 tests** with the other defaults unchanged. The three
+opt-in compile-failure checks below remain part of the manual validation workflow.
 
 | File / CTest name | Main responsibilities |
 | --- | --- |
-| `examples/{basic,external_mapping,ownership,defaults,static_traits,composition,concrete_methods}/main.cpp` / `example_NAME` | Seven self-contained usage examples, each registered as a smoke test |
+| `examples/*/main.cpp` / `example_NAME` | Nine self-contained usage examples, each registered as a smoke test |
 | `tests/traits_test.cpp` / `traits` | Interface and explicit-mapping checks, rejected unmapped structural/private/ambiguous types, mutable and multiple operations, heterogeneous dispatch, destruction, runtime factories |
 | `tests/vendor_motor_test.cpp` / `vendor_motor` | External signatures and `noexcept`, const borrowing, rejected temporaries, built-in types, move-only values/arguments, vendor conversion |
-| `tests/static_traits_test.cpp` / `static_traits` | Arbitrary static requirements and compile-time composition |
+| `tests/static_traits_test.cpp` / `static_traits` | Arbitrary static requirements, compile-time composition, and associated mapping checks |
 | `tests/composed_traits_test.cpp` / `composed_traits` | Component selection, constness, storage, copying/moving, rebinding, composition limits |
 | `tests/namespace_isolation_test.cpp` / `namespace_isolation` | Generated-name isolation and qualified macro arguments |
 | `tests/method_declarations_test.cpp` / `method_declarations` | Short/four-field forms, named parameters, forwarding, comma-containing types, method/parameter limits |
@@ -136,7 +133,7 @@ cmake --build --preset debug
 ctest --preset debug -R '^concrete_clone_no_rtti$'
 ```
 
-With all other defaults unchanged, this adds an eighteenth test only while the
+With all other defaults unchanged, this adds a twentieth test only while the
 option is enabled; it is not an extra default test. Any trait containing merge
 still requires RTTI. The fixed and clone-only benchmark suites build both backends
 with `-fno-rtti`; the merge/clone suite uses `-frtti`. Retained snapshots cover all
@@ -535,8 +532,7 @@ native overrides, mappings, examples, and tests.
   direct ordinary/static/composed declarations, exact validation, external
   mappings, owning/reference adapters, macros, interface views, uniqueness checks,
   inline owners, and binding restoration.
-- `examples/{basic,external_mapping,ownership,defaults,static_traits,composition,concrete_methods}/main.cpp`:
-  seven self-contained examples using only the public library header.
+- `examples/*/main.cpp`: nine self-contained examples using only the public library header.
 - `examples/README.md`: focused example index.
 - `tests/fixtures/rotatables.h`, `tests/fixtures/vendor_motor.hpp`, and
   `tests/fixtures/external_rotatable.h`: unchanged legacy native traits, vendor
@@ -546,9 +542,9 @@ native overrides, mappings, examples, and tests.
   `concrete_methods_test.cpp` for runtime merge, and `concrete_clone_test.cpp`
   for runtime clone and its optional no-RTTI branch.
 - `CMakeLists.txt`: `cpptraits` INTERFACE library and `CppTraits::CppTraits` alias,
-  optional example/test executables, private executable warnings, 17 default
+  optional example/test executables, private executable warnings, 19 default
   top-level CTest tests, and the OFF-by-default `CPPTRAITS_TEST_CLONE_NO_RTTI`
-  option for an eighteenth test.
+  option for a twentieth test.
 - `CMakePresets.json`: Debug/Release configure, build, and test presets.
 - `build.sh`, `run.sh`: convenience scripts; `.clangd`: Debug compilation database.
 - `build/`: generated files, ignored by Git.

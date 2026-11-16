@@ -28,7 +28,8 @@ option(CPPTRAITS_TEST_CLONE_NO_RTTI "Also test clone-only traits without RTTI" O
 include(CTest)
 
 if(CPPTRAITS_BUILD_EXAMPLES)
-    foreach(example IN ITEMS basic external_mapping ownership defaults static_traits composition concrete_methods)
+    foreach(example IN ITEMS basic external_mapping ownership defaults static_traits composition
+                             concrete_methods class_template associated_types)
         set(target cpptraits_example_${example})
         add_executable(${target} examples/${example}/main.cpp)
         target_link_libraries(${target} PRIVATE CppTraits::CppTraits)

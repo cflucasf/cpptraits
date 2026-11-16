@@ -79,8 +79,113 @@ namespace example {
 static_assert(example::Floating<double>);
 static_assert(!example::Floating<int>);
 
+namespace example {
+trait(Associated,
+    method(Item, read, (param(Offset, index)), const noexcept),
+    associated_type(Item),
+    associated_type(Offset),
+    method(void, write, (param(Item, value)), )
+);
+}
+
+struct ValidMapping {
+    int value = 0;
+};
+struct MissingAlias {};
+struct WrongSignature {};
+struct PrivateAlias {};
+struct MissingMapping {};
+
+impl(example::Associated, ValidMapping) {
+    using Item = int;
+    using Offset = unsigned;
+    static int read(const ValidMapping& object, unsigned) noexcept { return object.value; }
+    static int read(ValidMapping&, unsigned) noexcept { return -1; }
+    static void write(ValidMapping& object, int value) { object.value = value; }
+    static void write(const ValidMapping&, int) {}
+};
+
+impl(example::Associated, MissingAlias) {
+    using Item = int;
+    static int read(const MissingAlias&, unsigned) noexcept { return 0; }
+    static void write(MissingAlias&, int) {}
+};
+
+impl(example::Associated, WrongSignature) {
+    using Item = int;
+    using Offset = unsigned;
+    static int read(const WrongSignature&, unsigned) { return 0; }
+    static void write(WrongSignature&, double) {}
+};
+
+impl(example::Associated, PrivateAlias) {
+    using Offset = unsigned;
+    static int read(const PrivateAlias&, unsigned) noexcept { return 0; }
+    static void write(PrivateAlias&, int) {}
+private:
+    using Item = int;
+};
+
+template<class T>
+concept HasAssociatedMapping = requires { typename trait_mapping_t(example::Associated, T); };
+
+template<class T>
+concept CanCallMappedRead = requires(T& object) {
+    { trait_call(example::Associated, read, object, 0u) } noexcept -> std::same_as<int>;
+};
+
+template<class T>
+concept CanCallMappedWrite = requires(T& object) {
+    trait_call(example::Associated, write, object, 42);
+};
+
+static_assert(example::Associated<ValidMapping>);
+static_assert(!example::Associated<const ValidMapping>);
+static_assert(!example::Associated<MissingAlias>);
+static_assert(!example::Associated<WrongSignature>);
+static_assert(!example::Associated<PrivateAlias>);
+static_assert(!example::Associated<MissingMapping>);
+static_assert(HasAssociatedMapping<ValidMapping> && !HasAssociatedMapping<MissingAlias>);
+static_assert(std::same_as<trait_mapping_t(example::Associated, ValidMapping)::Item, int>);
+static_assert(CanCallMappedRead<ValidMapping> && CanCallMappedRead<const ValidMapping>);
+static_assert(!CanCallMappedRead<MissingAlias> && !CanCallMappedRead<WrongSignature>);
+static_assert(CanCallMappedWrite<ValidMapping> && !CanCallMappedWrite<const ValidMapping>);
+
+template<class Element>
+struct NativeAssociated : implements(example::Associated, Element, unsigned) {
+    Element read(unsigned) const noexcept override { return {}; }
+    void write(Element) override {}
+};
+
+struct ShadowedBinding : NativeAssociated<int> {
+    using Item = double;
+};
+
+struct PlainAssociated {
+    using Item = int;
+    using Offset = unsigned;
+    int read(unsigned) const noexcept { return 0; }
+    void write(int) {}
+};
+
+static_assert(example::Associated<NativeAssociated<int>>);
+static_assert(example::Associated<NativeAssociated<std::pair<int, bool>>>);
+static_assert(std::same_as<NativeAssociated<int>::Item, int>);
+static_assert(std::same_as<NativeAssociated<int>::Offset, unsigned>);
+static_assert(!example::Associated<const NativeAssociated<int>>);
+static_assert(!example::Associated<ShadowedBinding>);
+static_assert(!example::Associated<PlainAssociated>);
+static_assert(!HasAssociatedMapping<NativeAssociated<int>>);
+
 int main()
 {
+    ValidMapping mapped;
+    int evaluations = 0;
+    trait_call(example::Associated, write, (++evaluations, mapped), 42);
+    if (evaluations != 1 || trait_call(example::Associated, read, mapped, 0u) != 42) {
+        return 5;
+    }
+
     Motor motor{1400, 5, "powered motor"};
     const float expected = 5.0f * 1400.0f * 2.0f * std::numbers::pi_v<float> / 60.0f;
     if (std::abs(readPower(motor) - expected) > 0.001f) {
