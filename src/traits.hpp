@@ -629,6 +629,36 @@ namespace cpptraits_detail {
 #define CPPTRAITS_MAPPED_CALL_CLONE(...)
 #define CPPTRAITS_MAPPED_CALL(Kind, ...) CPPTRAITS_MAPPED_CALL_##Kind(__VA_ARGS__)
 
+// Native calls use the same declared receiver and argument signatures as mapped
+// calls. Select the exact member overload, retaining virtual dispatch.
+#define CPPTRAITS_NATIVE_CALL_SIGNATURE(Return, Parameters, Qualifiers) \
+    ::cpptraits_detail::mapped_function< \
+        CPPTRAITS_STATIC_SIGNATURE(cpptraits_native_calls, Return, Parameters, Qualifiers, CppTraitsSelf)>
+#define CPPTRAITS_NATIVE_CALL_REQUIRED(Return, Method, Parameters, Arguments, Qualifiers, Body) \
+    static CPPTRAITS_TYPE(Return) Method( \
+        typename CPPTRAITS_NATIVE_CALL_SIGNATURE(Return, Parameters, Qualifiers)::receiver cpptraitsReceiver \
+        CPPTRAITS_EXTRA_ARGUMENTS Parameters) \
+        noexcept(CPPTRAITS_NATIVE_CALL_SIGNATURE(Return, Parameters, Qualifiers)::is_noexcept) { \
+        return (cpptraitsReceiver.*static_cast< \
+            CPPTRAITS_TYPE(Return) (CppTraitsSelf::*) Parameters Qualifiers>( \
+                &CppTraitsSelf::Method)) Arguments; \
+    }
+#define CPPTRAITS_NATIVE_CALL_ASSOCIATED(...)
+#define CPPTRAITS_NATIVE_CALL_DEFAULT(...)
+#define CPPTRAITS_NATIVE_CALL_MERGE(...)
+#define CPPTRAITS_NATIVE_CALL_CLONE(...)
+#define CPPTRAITS_NATIVE_CALL(Kind, ...) CPPTRAITS_NATIVE_CALL_##Kind(__VA_ARGS__)
+
+// An empty primary keeps unsupported receivers substitution-friendly. Prefer
+// native members without instantiating a possibly absent or invalid mapping.
+#define CPPTRAITS_CALL_DISPATCH \
+    template<class CppTraitsSelf, bool = cpptraits_runtime_compatible<CppTraitsSelf>> \
+    struct cpptraits_calls {}; \
+    template<class CppTraitsSelf> requires cpptraits_has_implementation<CppTraitsSelf> \
+    struct cpptraits_calls<CppTraitsSelf, false> : cpptraits_mapped_calls<CppTraitsSelf> {}; \
+    template<class CppTraitsSelf> \
+    struct cpptraits_calls<CppTraitsSelf, true> : cpptraits_native_calls<CppTraitsSelf> {};
+
 // ---- Build the trait's concept, runtime interface, and adapters. ----
 // trait(Rotatable, ...) puts generated types in Rotatable_cpptraits_detail;
 // dyn(Rotatable) selects its interface. The numbered steps below generate:
@@ -700,6 +730,11 @@ namespace cpptraits_detail {
             using CppTraitsImpl = cpptraits_implementation<CppTraitsSelf>;         \
             CPPTRAITS_METHODS(CPPTRAITS_MAPPED_CALL, __VA_ARGS__)                   \
         };                                                                        \
+        template<class CppTraitsSelf> requires cpptraits_runtime_compatible<CppTraitsSelf> \
+        struct cpptraits_native_calls {                                           \
+            CPPTRAITS_METHODS(CPPTRAITS_NATIVE_CALL, __VA_ARGS__)                   \
+        };                                                                        \
+        CPPTRAITS_CALL_DISPATCH                                                    \
         /* 5: Store an owned value; let the merge helper access it privately. */    \
         template<class T> class cpptraits_owning_adapter                          \
             : public cpptraits_adapter_base<T, cpptraits_owning_adapter<T>> {       \
@@ -781,8 +816,11 @@ namespace cpptraits_detail {
 #define CPPTRAITS_ASSOCIATED_PARAMETER(Name) , class CppTraitsBound_##Name
 #define CPPTRAITS_ASSOCIATED_BINDING(Name) using Name = CppTraitsBound_##Name;
 #define CPPTRAITS_ASSOCIATED_ARGUMENT(Name) , typename CppTraitsSelf::Name
+#define CPPTRAITS_ASSOCIATED_MAPPING_ARGUMENT(Name) , typename CppTraitsImpl::Name
 #define CPPTRAITS_ASSOCIATED_CHECK(Name) typename CppTraitsImpl::Name;
 #define CPPTRAITS_ASSOCIATED_ALIAS(Name) using Name = typename CppTraitsImpl::Name;
+
+#define CPPTRAITS_FORWARD_ASSOCIATED(...)
 
 #define CPPTRAITS_ASSOCIATED_DECLARE_REQUIRED CPPTRAITS_DECLARE_REQUIRED
 #define CPPTRAITS_ASSOCIATED_DECLARE_ASSOCIATED(...)
@@ -832,6 +870,8 @@ namespace cpptraits_detail {
         };                                                                        \
         template<class... CppTraitsBindings>                                      \
         using cpptraits_native_interface = cpptraits_bound_interface<void, CppTraitsBindings...>; \
+        template<class... CppTraitsBindings>                                      \
+        using cpptraits_interface_type = cpptraits_native_interface<CppTraitsBindings...>; \
         template<class T> struct cpptraits_implementation;                        \
         template<class CppTraitsImpl>                                             \
         concept cpptraits_has_associated_types = requires {                       \
@@ -850,6 +890,32 @@ namespace cpptraits_detail {
             };                                                                    \
             template<class CppTraitsSelf> struct cpptraits_mapped_calls {          \
                 CPPTRAITS_METHODS(CPPTRAITS_MAPPED_CALL, __VA_ARGS__)               \
+            };                                                                    \
+            template<class CppTraitsSelf> struct cpptraits_native_calls {          \
+                CPPTRAITS_METHODS(CPPTRAITS_NATIVE_CALL, __VA_ARGS__)               \
+            };                                                                    \
+            using cpptraits_interface = cpptraits_bound_interface<void            \
+                CPPTRAITS_ASSOCIATED_TYPES(CPPTRAITS_ASSOCIATED_MAPPING_ARGUMENT, __VA_ARGS__)>; \
+            template<class CppTraitsObject> class cpptraits_owning_adapter        \
+                : public cpptraits_interface {                                   \
+                CppTraitsObject object_;                                          \
+                CppTraitsObject& cpptraitsObject() noexcept { return object_; }   \
+                const CppTraitsObject& cpptraitsObject() const noexcept { return object_; } \
+            public:                                                               \
+                explicit cpptraits_owning_adapter(CppTraitsObject object)         \
+                    : object_(::std::move(object)) {}                             \
+                CPPTRAITS_METHODS(CPPTRAITS_FORWARD_METHOD, __VA_ARGS__)           \
+            };                                                                    \
+            template<class CppTraitsObject> class cpptraits_reference_adapter     \
+                : public cpptraits_interface {                                   \
+                CppTraitsObject* object_;                                         \
+                CppTraitsObject& cpptraitsObject() noexcept { return *object_; }  \
+                const CppTraitsObject& cpptraitsObject() const noexcept { return *object_; } \
+            public:                                                               \
+                explicit cpptraits_reference_adapter(CppTraitsObject& object) noexcept \
+                    : object_(::std::addressof(object)) {}                        \
+                cpptraits_reference_adapter(CppTraitsObject&&) = delete;                        \
+                CPPTRAITS_METHODS(CPPTRAITS_FORWARD_METHOD, __VA_ARGS__)           \
             };                                                                    \
         };                                                                        \
         template<class CppTraitsSelf> concept cpptraits_runtime_compatible =       \
@@ -872,6 +938,40 @@ namespace cpptraits_detail {
         template<class T> requires cpptraits_has_implementation<T>                \
         using cpptraits_mapped_calls =                                             \
             typename cpptraits_contract<cpptraits_mapping<T>>::template cpptraits_mapped_calls<T>; \
+        template<class CppTraitsSelf> requires cpptraits_runtime_compatible<CppTraitsSelf> \
+        using cpptraits_native_calls = typename cpptraits_contract<CppTraitsSelf>::template \
+            cpptraits_native_calls<CppTraitsSelf>;                                \
+        CPPTRAITS_CALL_DISPATCH                                                    \
+        template<class T> requires                                                \
+            cpptraits_has_implementation<::std::remove_cvref_t<T>> &&              \
+            ::std::move_constructible<::std::remove_cvref_t<T>> &&                 \
+            ::std::constructible_from<::std::remove_cvref_t<T>, T&&>               \
+        auto cpptraits_make_value(T&& object) {                                  \
+            using CppTraitsContract = cpptraits_contract<                         \
+                cpptraits_mapping<::std::remove_cvref_t<T>>>;                     \
+            return typename CppTraitsContract::template cpptraits_owning_adapter< \
+                ::std::remove_cvref_t<T>>(::std::forward<T>(object));              \
+        }                                                                         \
+        template<class T> requires cpptraits_has_implementation<T>                \
+        auto cpptraits_make_reference(T& object) noexcept {                       \
+            return typename cpptraits_contract<cpptraits_mapping<T>>::template    \
+                cpptraits_reference_adapter<T>(object);                          \
+        }                                                                         \
+        template<class T> requires (!::std::is_lvalue_reference_v<T>)              \
+        void cpptraits_make_reference(T&&) = delete;                              \
+        template<class T> requires                                                \
+            cpptraits_has_implementation<::std::remove_cvref_t<T>> &&              \
+            ::std::move_constructible<::std::remove_cvref_t<T>> &&                 \
+            ::std::constructible_from<::std::remove_cvref_t<T>, T&&>               \
+        auto cpptraits_make_box(T&& object)                                       \
+            -> ::std::unique_ptr<typename cpptraits_contract<                     \
+                cpptraits_mapping<::std::remove_cvref_t<T>>>::cpptraits_interface> { \
+            using CppTraitsContract = cpptraits_contract<                         \
+                cpptraits_mapping<::std::remove_cvref_t<T>>>;                     \
+            return ::std::make_unique<typename CppTraitsContract::template        \
+                cpptraits_owning_adapter<::std::remove_cvref_t<T>>>(               \
+                    ::std::forward<T>(object));                                   \
+        }                                                                         \
     }                                                                             \
     template<class CppTraitsSelf> concept Name = Scope::cpptraits_satisfied<CppTraitsSelf>
 
@@ -977,19 +1077,21 @@ namespace cpptraits_detail {
     CPPTRAITS_SELECT_IMPL(__VA_OPT__(CPPTRAITS_IMPL_TEMPLATE,) CPPTRAITS_IMPL_EXACT)( \
         Name##_cpptraits_detail, (TypeOrDeclaration) __VA_OPT__(, __VA_ARGS__))
 
-// Access a validated mapping type, or invoke one of its declared operations.
+// Access a validated mapping type, or call a required operation on a native or
+// mapped receiver. Native members take precedence when both paths are valid.
 #define trait_mapping_t(Name, ...) Name##_cpptraits_detail::cpptraits_mapped_implementation<__VA_ARGS__>
 #define trait_call(Name, Method, Object, ...) \
-    Name##_cpptraits_detail::cpptraits_mapped_calls<::std::remove_cvref_t<decltype((Object))>>::Method( \
+    Name##_cpptraits_detail::cpptraits_calls<::std::remove_cvref_t<decltype((Object))>>::Method( \
         (Object) __VA_OPT__(, __VA_ARGS__))
 
 // dyn names the generated interface type; it does not create an object.
+// Associated traits take bindings in declaration order: dyn(Iterator, int).
 // Qualified names work: dyn(app::Rotatable) selects the interface in
 // app::Rotatable_cpptraits_detail.
 // adapt/borrow/box call the generated factories, which handle checks and ownership.
 // Variadic arguments preserve commas in expressions like box(Trait, T{a, b});
 // the source expression is evaluated once. The same macros work for compositions.
-#define dyn(Name) Name##_cpptraits_detail::cpptraits_interface_type
+#define dyn(Name, ...) Name##_cpptraits_detail::cpptraits_interface_type __VA_OPT__(<__VA_ARGS__>)
 #define adapt(Name, ...) Name##_cpptraits_detail::cpptraits_make_value(__VA_ARGS__)
 #define borrow(Name, ...) Name##_cpptraits_detail::cpptraits_make_reference(__VA_ARGS__)
 #define box(Name, ...) Name##_cpptraits_detail::cpptraits_make_box(__VA_ARGS__)

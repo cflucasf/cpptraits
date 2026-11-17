@@ -29,7 +29,7 @@ include(CTest)
 
 if(CPPTRAITS_BUILD_EXAMPLES)
     foreach(example IN ITEMS basic external_mapping ownership defaults static_traits composition
-                             concrete_methods class_template associated_types)
+                             concrete_methods class_template associated_types iterable)
         set(target cpptraits_example_${example})
         add_executable(${target} examples/${example}/main.cpp)
         target_link_libraries(${target} PRIVATE CppTraits::CppTraits)
@@ -60,6 +60,16 @@ if(BUILD_TESTING AND CPPTRAITS_BUILD_TESTS)
     target_link_libraries(static_traits_test PRIVATE CppTraits::CppTraits)
     cpptraits_configure_target(static_traits_test)
     add_test(NAME static_traits COMMAND static_traits_test)
+
+    add_executable(trait_call_test tests/trait_call_test.cpp)
+    target_link_libraries(trait_call_test PRIVATE CppTraits::CppTraits)
+    cpptraits_configure_target(trait_call_test)
+    add_test(NAME trait_call COMMAND trait_call_test)
+
+    add_executable(associated_types_test tests/associated_types_test.cpp)
+    target_link_libraries(associated_types_test PRIVATE CppTraits::CppTraits)
+    cpptraits_configure_target(associated_types_test)
+    add_test(NAME associated_types COMMAND associated_types_test)
 
     add_executable(composed_traits_test tests/composed_traits_test.cpp)
     target_link_libraries(composed_traits_test PRIVATE CppTraits::CppTraits)

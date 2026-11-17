@@ -4,7 +4,7 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
 examples=(basic external_mapping ownership defaults static_traits composition
-          concrete_methods class_template associated_types)
+          concrete_methods class_template associated_types iterable)
 
 case "${1:-}" in
     --list)
@@ -23,7 +23,7 @@ if (( $# > 0 )); then
 fi
 
 case "$example" in
-    basic|external_mapping|ownership|defaults|static_traits|composition|concrete_methods|class_template|associated_types) ;;
+    basic|external_mapping|ownership|defaults|static_traits|composition|concrete_methods|class_template|associated_types|iterable) ;;
     *)
         printf 'Unknown example: %s\nUse ./run.sh --list to see available examples.\n' "$example" >&2
         exit 2

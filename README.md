@@ -144,12 +144,29 @@ use a runtime adapter to call `getRpm()` or `isStopped()` through the interface.
 For example, `printRpm(borrow(Rotatable, source))` works, while `printRpm(source)`
 does not because the vendor type has no `getRpm()` member.
 
-To call a required operation directly on a mapped type, use
+To call a required operation uniformly on a native or mapped type, use
 `trait_call(Rotatable, getRpm, source)`. CppTraits infers the receiver type and
-calls the static overload that matches the trait signature. This works with
-both fixed signatures and signatures that use associated types. Native types
-using `implements` call their own members, such as `motor.getRpm()`. Default
-and concrete operations use the runtime interface.
+selects the overload declared by the trait. Native implementations (including
+adapters and `dyn` references) call their member with virtual dispatch preserved;
+external types call the validated static mapping. If a type supports both paths,
+native members take precedence, including their associated-type bindings.
+No adapter is created, and the receiver expression is evaluated once.
+
+```cpp
+template<Rotatable T>
+float readRpm(const T& source) {
+    return trait_call(Rotatable, getRpm, source);
+}
+```
+
+This works with both fixed signatures and signatures that use associated types.
+Constness, reference returns, and `noexcept` follow the declared trait signature,
+not unrelated overloads or a stronger exception guarantee on an implementation.
+A const operation can be called on a const receiver even if other operations
+require mutation. Types must satisfy the native interface or mapping contract;
+merely having a same-named member does not enable `trait_call`.
+Only required operations are exposed: default and concrete operations still use
+the runtime interface. `trait_mapping_t` remains mapping-only.
 
 To map a family of class template specializations, pass the template declaration
 and target type as separate parenthesized arguments. For a vendor type
@@ -447,7 +464,8 @@ that the alias is public and that both static functions match after substituting
 For example, a mapping with `Item = int` is rejected if `peek()` returns
 `const double*`, even if `next()` correctly returns `std::optional<int>`.
 
-An external iterator mapping can be called with `trait_call(Iterator, next, cursor)`.
+Native and external iterators can both be called with
+`trait_call(Iterator, next, cursor)`.
 Use `trait_mapping_t(Iterator, I)` when you need the validated mapping type
 itself, for example to read its `Item` alias:
 
@@ -456,8 +474,24 @@ template<Iterator I>
 using mapped_item_t = typename trait_mapping_t(Iterator, I)::Item;
 ```
 
-Traits with associated types support required `method(...)` descriptors.
-`dyn`, `borrow`, `adapt`, and `box` are available for fixed-interface traits.
+Mapped implementations also support `borrow`, `adapt`, and `box`. The factories
+infer associated types from the mapping. Use `dyn(Iterator, int)` to name the
+runtime interface with `Item = int`; multiple bindings follow declaration order.
+Different bindings produce distinct interface types.
+
+```cpp
+auto borrowed = borrow(Iterator, cursor); // Shares cursor's state; lvalues only.
+auto owned = adapt(Iterator, cursor);     // Copies cursor; moves an rvalue.
+std::unique_ptr<dyn(Iterator, int)> boxed = box(Iterator, cursor);
+std::optional<int> item = boxed->next();
+```
+
+As with fixed-interface traits, these factories require an `impl` mapping.
+Borrowing preserves the source's constness: a const source is accepted only when
+all required operations have const receivers. Borrowing neither allocates nor
+extends the source's lifetime; `adapt` and `box` own their stored values.
+Traits with associated types still support only required `method(...)`
+descriptors, not default or concrete operations or runtime composition.
 
 ## Supported scope
 
@@ -492,7 +526,8 @@ See the [examples index](examples/README.md) for more guidance.
 | [composition](examples/composition/main.cpp) | Combine capabilities and select runtime interfaces |
 | [concrete_methods](examples/concrete_methods/main.cpp) | Same-type merge and owning runtime clone operations |
 | [class_template](examples/class_template/main.cpp) | One constrained mapping for a class template |
-| [associated_types](examples/associated_types/main.cpp) | A native iterator that binds its item type with `implements` |
+| [associated_types](examples/associated_types/main.cpp) | Native and mapped iterators with associated item types and runtime adapters |
+| [iterable](examples/iterable/main.cpp) | Extend `std::vector` with a read-only `Iterable` trait and runtime adapters |
 
 ## Build and run this repository
 

@@ -77,7 +77,7 @@ static_assert(!CanAdapt<UnmappedMotor> && !CanBorrow<UnmappedMotor&> &&
               !CanBox<UnmappedMotor>);
 static_assert(CanCallGetRpm<vendor::Motor> && CanCallGetRpm<const CalibratedMotor>);
 static_assert(CanCallGetRpm<vendor::MultiChannelMotor<double, 1>>);
-static_assert(!CanCallGetRpm<UnmappedMotor> && !CanCallGetRpm<dyn(Rotatable)>);
+static_assert(!CanCallGetRpm<UnmappedMotor> && CanCallGetRpm<dyn(Rotatable)>);
 
 trait(Mutable, method(void, set, (param(int, value)), ));
 impl(Mutable, int) {
