@@ -413,9 +413,58 @@ namespace cpptraits_detail {
 //   becomes DECLARE_METHOD(REQUIRED, ...).
 // METHODS repeats this for the whole list, letting us reuse it to generate
 // declarations, signature checks, and forwarding methods.
-#define CPPTRAITS_APPLY_METHOD(Generator, Descriptor) Generator Descriptor
+#define CPPTRAITS_APPLY_METHOD(Generator, Descriptor) \
+    CPPTRAITS_APPLY_METHOD_I(Generator, CPPTRAITS_UNPAREN Descriptor)
+#define CPPTRAITS_APPLY_METHOD_I(Generator, ...) CPPTRAITS_APPLY_METHOD_II(Generator, __VA_ARGS__)
+#define CPPTRAITS_APPLY_METHOD_II(Generator, Kind, ...) CPPTRAITS_APPLY_##Kind(Generator, __VA_ARGS__)
+#define CPPTRAITS_APPLY_REQUIRED(Generator, ...) Generator(REQUIRED, __VA_ARGS__)
+#define CPPTRAITS_APPLY_DEFAULT(Generator, ...) Generator(DEFAULT, __VA_ARGS__)
+#define CPPTRAITS_APPLY_MERGE(Generator, ...) Generator(MERGE, __VA_ARGS__)
+#define CPPTRAITS_APPLY_CLONE(Generator, ...) Generator(CLONE, __VA_ARGS__)
+#define CPPTRAITS_APPLY_ASSOCIATED(Generator, ...) Generator(ASSOCIATED, __VA_ARGS__)
+#define CPPTRAITS_APPLY_REQUIRES(Generator, ...)
 #define CPPTRAITS_METHODS(Generator, ...) \
     CPPTRAITS_EACH(CPPTRAITS_APPLY_METHOD, Generator, __VA_ARGS__)
+
+// Requirements introduce a caller-named type parameter only inside their own
+// constraint expression. The expression is variadic to preserve template commas.
+#define trait_requires(Self, ...) (REQUIRES, , Self, , , , (__VA_ARGS__))
+#define CPPTRAITS_REQUIREMENT(Unused, Descriptor) \
+    CPPTRAITS_REQUIREMENT_I(CPPTRAITS_UNPAREN Descriptor)
+#define CPPTRAITS_REQUIREMENT_I(...) CPPTRAITS_REQUIREMENT_II(__VA_ARGS__)
+#define CPPTRAITS_REQUIREMENT_II(Kind, Return, Name, Parameters, Arguments, Qualifiers, Body) \
+    CPPTRAITS_REQUIREMENT_##Kind(Name, Body)
+#define CPPTRAITS_REQUIREMENT_REQUIRED(...)
+#define CPPTRAITS_REQUIREMENT_DEFAULT(...)
+#define CPPTRAITS_REQUIREMENT_MERGE(...)
+#define CPPTRAITS_REQUIREMENT_CLONE(...)
+#define CPPTRAITS_REQUIREMENT_ASSOCIATED(...)
+#define CPPTRAITS_REQUIREMENT_REQUIRES(Self, Expression) \
+    && requires { \
+        []<class Self>() requires (CPPTRAITS_UNPAREN Expression) {} \
+            .template operator()<CppTraitsObject>(); \
+    }
+
+// Source tags distinguish exact generated wrappers/interfaces from their derived
+// classes. ADL finds these overloads only for the matching trait and exact type,
+// so inheriting an adapter does not bypass a concrete subclass's requirements.
+#define CPPTRAITS_REQUIREMENT_SOURCE(Wrapper, Source) \
+    friend ::std::type_identity<Source> cpptraits_requirement_source( \
+        cpptraits_requirement_tag, ::std::type_identity<Wrapper>) { return {}; }
+#define CPPTRAITS_REQUIREMENTS(...) \
+    template<class CppTraitsObject> concept cpptraits_requirements = \
+        true CPPTRAITS_EACH(CPPTRAITS_REQUIREMENT, _, __VA_ARGS__); \
+    struct cpptraits_requirement_tag {}; \
+    struct cpptraits_erased_requirements {}; \
+    template<class CppTraitsObject> \
+    ::std::type_identity<CppTraitsObject> cpptraits_requirement_source( \
+        cpptraits_requirement_tag, ::std::type_identity<CppTraitsObject>); \
+    template<class CppTraitsObject> using cpptraits_requirement_type = \
+        typename decltype(cpptraits_requirement_source(cpptraits_requirement_tag{}, \
+            ::std::type_identity<::std::remove_cvref_t<CppTraitsObject>>{}))::type; \
+    template<class CppTraitsObject> concept cpptraits_runtime_requirements = \
+        ::std::same_as<cpptraits_requirement_type<CppTraitsObject>, cpptraits_erased_requirements> \
+        || cpptraits_requirements<cpptraits_requirement_type<CppTraitsObject>>;
 
 // An associated type has the same descriptor layout as a method. Markers expand
 // to 1, so the first token is 1 when present and the trailing 0 otherwise.
@@ -675,6 +724,7 @@ namespace cpptraits_detail {
 // while incomplete cannot become valid later in the same compilation.
 #define CPPTRAITS_TRAIT_0(Name, Scope, ...)                                         \
     namespace Scope {                                                              \
+        CPPTRAITS_REQUIREMENTS(__VA_ARGS__)                                        \
         /* 1: Check method kinds, then declare the runtime interface. */            \
         inline constexpr bool cpptraits_has_concrete =                            \
             false CPPTRAITS_METHODS(CPPTRAITS_CONCRETE_FLAG, __VA_ARGS__);          \
@@ -682,6 +732,7 @@ namespace cpptraits_detail {
             false CPPTRAITS_METHODS(CPPTRAITS_MERGE_FLAG, __VA_ARGS__);             \
         struct cpptraits_interface_type {                                         \
             using cpptraits_ordinary_interface = void;                            \
+            CPPTRAITS_REQUIREMENT_SOURCE(cpptraits_interface_type, cpptraits_erased_requirements) \
             virtual ~cpptraits_interface_type() = default;                        \
             CPPTRAITS_METHODS(CPPTRAITS_DECLARE_METHOD, __VA_ARGS__)                \
         };                                                                        \
@@ -701,7 +752,8 @@ namespace cpptraits_detail {
         template<class CppTraitsSelf>                                             \
         concept cpptraits_runtime_compatible =                                    \
             ::std::derived_from<CppTraitsSelf, cpptraits_interface_type> &&         \
-            requires { CPPTRAITS_METHODS(CPPTRAITS_REQUIRE_METHOD, __VA_ARGS__) };  \
+            requires { CPPTRAITS_METHODS(CPPTRAITS_REQUIRE_METHOD, __VA_ARGS__) } && \
+            cpptraits_runtime_requirements<CppTraitsSelf>;                        \
         /* 4: impl defines this otherwise incomplete mapping template. */          \
         template<class T> struct cpptraits_implementation;                        \
         template<class CppTraitsSelf> struct cpptraits_implementation_check {      \
@@ -718,6 +770,7 @@ namespace cpptraits_detail {
         /* a valid unqualified T mapping, because clones return owning adapters. */ \
         template<class T> concept cpptraits_has_implementation =                  \
             ::std::is_object_v<T> && !::std::is_volatile_v<T> &&                    \
+            cpptraits_requirements<::std::remove_cvref_t<T>> &&                    \
             cpptraits_implementation_check<T>::value &&                           \
             (!cpptraits_has_concrete ||                                          \
                 cpptraits_implementation_check<::std::remove_const_t<T>>::value);                            \
@@ -745,6 +798,7 @@ namespace cpptraits_detail {
             T& cpptraitsObject() noexcept { return object_; }                     \
             const T& cpptraitsObject() const noexcept { return object_; }         \
         public:                                                                   \
+            CPPTRAITS_REQUIREMENT_SOURCE(cpptraits_owning_adapter, T)              \
             explicit cpptraits_owning_adapter(T object)                           \
                 : object_(::std::move(object)) {}                                 \
             CPPTRAITS_METHODS(CPPTRAITS_FORWARD_METHOD, __VA_ARGS__)               \
@@ -760,6 +814,7 @@ namespace cpptraits_detail {
             T& cpptraitsObject() noexcept { return *object_; }                    \
             const T& cpptraitsObject() const noexcept { return *object_; }        \
         public:                                                                   \
+            CPPTRAITS_REQUIREMENT_SOURCE(cpptraits_reference_adapter, ::std::remove_cv_t<T>) \
             explicit cpptraits_reference_adapter(T& object) noexcept             \
                 : object_(::std::addressof(object)) {}                            \
             cpptraits_reference_adapter(T&&) = delete;                            \
@@ -812,6 +867,7 @@ namespace cpptraits_detail {
 #define CPPTRAITS_ASSOCIATED_TYPE_DEFAULT(Generate, Name)
 #define CPPTRAITS_ASSOCIATED_TYPE_MERGE(Generate, Name)
 #define CPPTRAITS_ASSOCIATED_TYPE_CLONE(Generate, Name)
+#define CPPTRAITS_ASSOCIATED_TYPE_REQUIRES(Generate, Name)
 
 #define CPPTRAITS_ASSOCIATED_PARAMETER(Name) , class CppTraitsBound_##Name
 #define CPPTRAITS_ASSOCIATED_BINDING(Name) using Name = CppTraitsBound_##Name;
@@ -861,10 +917,12 @@ namespace cpptraits_detail {
 // Reconstruct the expected base from T's public aliases to catch shadowed types.
 #define CPPTRAITS_TRAIT_1(Name, Scope, ...)                                         \
     namespace Scope {                                                             \
+        CPPTRAITS_REQUIREMENTS(__VA_ARGS__)                                        \
         template<class CppTraitsUnused                                            \
             CPPTRAITS_ASSOCIATED_TYPES(CPPTRAITS_ASSOCIATED_PARAMETER, __VA_ARGS__)> \
         struct cpptraits_bound_interface {                                        \
             CPPTRAITS_ASSOCIATED_TYPES(CPPTRAITS_ASSOCIATED_BINDING, __VA_ARGS__)    \
+            CPPTRAITS_REQUIREMENT_SOURCE(cpptraits_bound_interface, cpptraits_erased_requirements) \
             virtual ~cpptraits_bound_interface() = default;                       \
             CPPTRAITS_METHODS(CPPTRAITS_ASSOCIATED_DECLARE, __VA_ARGS__)            \
         };                                                                        \
@@ -902,6 +960,7 @@ namespace cpptraits_detail {
                 CppTraitsObject& cpptraitsObject() noexcept { return object_; }   \
                 const CppTraitsObject& cpptraitsObject() const noexcept { return object_; } \
             public:                                                               \
+                CPPTRAITS_REQUIREMENT_SOURCE(cpptraits_owning_adapter, CppTraitsObject) \
                 explicit cpptraits_owning_adapter(CppTraitsObject object)         \
                     : object_(::std::move(object)) {}                             \
                 CPPTRAITS_METHODS(CPPTRAITS_FORWARD_METHOD, __VA_ARGS__)           \
@@ -912,6 +971,7 @@ namespace cpptraits_detail {
                 CppTraitsObject& cpptraitsObject() noexcept { return *object_; }  \
                 const CppTraitsObject& cpptraitsObject() const noexcept { return *object_; } \
             public:                                                               \
+                CPPTRAITS_REQUIREMENT_SOURCE(cpptraits_reference_adapter, ::std::remove_cv_t<CppTraitsObject>) \
                 explicit cpptraits_reference_adapter(CppTraitsObject& object) noexcept \
                     : object_(::std::addressof(object)) {}                        \
                 cpptraits_reference_adapter(CppTraitsObject&&) = delete;                        \
@@ -923,11 +983,13 @@ namespace cpptraits_detail {
                 sizeof(CppTraitsSelf);                                            \
                 requires ::std::derived_from<CppTraitsSelf, cpptraits_bound_interface<void \
                     CPPTRAITS_ASSOCIATED_TYPES(CPPTRAITS_ASSOCIATED_ARGUMENT, __VA_ARGS__)>>; \
-            } && cpptraits_contract<CppTraitsSelf>::template native<CppTraitsSelf>; \
+            } && cpptraits_contract<CppTraitsSelf>::template native<CppTraitsSelf> \
+                && cpptraits_runtime_requirements<CppTraitsSelf>; \
         template<class T> using cpptraits_mapping =                                \
             cpptraits_implementation<::std::remove_const_t<T>>;                    \
         template<class T> concept cpptraits_has_implementation =                  \
             ::std::is_object_v<T> && !::std::is_volatile_v<T> &&                    \
+            cpptraits_requirements<::std::remove_cvref_t<T>> &&                    \
             cpptraits_has_associated_types<cpptraits_mapping<T>> &&                \
             cpptraits_contract<cpptraits_mapping<T>>::template mapped<T>;          \
         template<class T> concept cpptraits_satisfied =                            \

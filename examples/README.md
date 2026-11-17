@@ -16,6 +16,7 @@ exit-status check (including in Release builds). Standard headers come before
 | `class_template` | One constrained `impl` for a family of class template specializations |
 | `associated_types` | A native iterator that binds the shared `Item` of `peek()` and `next()` |
 | `iterable` | Extend `std::vector<T, Allocator>` with a read-only `Iterable` mapping, range-for, and runtime adapters |
+| `trait_requires` | Reuse static constraints in runtime traits; validate native/mapped sources and propagate requirements through composition |
 
 ## Run from the repository root
 
@@ -27,6 +28,7 @@ exit-status check (including in Release builds). Standard headers come before
 ./run.sh class_template
 ./run.sh associated_types
 ./run.sh iterable
+./run.sh trait_requires
 ```
 
 Or use CMake directly:

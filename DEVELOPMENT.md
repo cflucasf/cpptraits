@@ -226,15 +226,16 @@ selecting one of two fixed contracts.
 Separate expansions declare interface methods, check signatures/mappings, and
 emit adapter overrides.
 
-- Traits accept 1–8 descriptors total: ordinary required, default, and concrete
-  markers combined. All-default traits are supported; empty declarations are not.
+- Traits accept 1–8 descriptors total: ordinary required, default, concrete,
+  associated-type, and `trait_requires` descriptors combined. All-default traits
+  are supported; empty declarations are not.
 - `concrete_method(name, merge)` maps `static void name(T&, const T&)` to mutable
   `void name(const dyn(Trait)&)`.
 - `concrete_method(name, clone)` maps `static T name(const T&)` to
   `std::unique_ptr<dyn(Trait)> name() const`.
 - Both shapes may coexist under arbitrary method names with fixed/default
-  operations, within the shared eight-operation limit. Neither accepts custom
-  return types, parameter lists, qualifiers, or a concrete default body.
+  operations and requirements, within the shared eight-descriptor limit. Neither
+  accepts custom return types, parameter lists, qualifiers, or a concrete default body.
 - Methods accept up to eight named parameters, with an independent iteration chain.
 - `method(Return, name, qualifiers)` is the no-parameter short form. The full form
   is `method(Return, name, (param(Type, name), ...), qualifiers)`; use `()` for none.
@@ -248,22 +249,83 @@ emit adapter overrides.
   remain useful for function-pointer/array declarators. Raw parameter lists,
   default arguments, unnamed parameters, explicit forwarding lists, and C-style
   varargs are unsupported.
-- Runtime descriptors represent fixed-signature virtual-compatible members, not
-  static operations, member templates, or arbitrary concept expressions.
+- Runtime method descriptors represent fixed-signature virtual-compatible members,
+  not static operations or member templates. `trait_requires` descriptors add
+  arbitrary predicate expressions without generating runtime members.
 
-The global macros are `trait`, `method`, `default_method`, `concrete_method`, `param`, `impl`,
-`implements`, `dyn`, `adapt`, `borrow`, `box`, `static_trait`, and `composed_trait`.
+The global macros include `trait`, `trait_requires`, `method`, `default_method`,
+`concrete_method`, `param`, `impl`, `implements`, `dyn`, `adapt`, `borrow`, `box`,
+`static_trait`, and `composed_trait`.
 These deliberate short names can conflict with other libraries. Namespace
 isolation does not eliminate preprocessor collisions; there are no opt-in
 prefixed aliases.
 
 ## Validation, defaults, and mapping constraints
 
+### Inline trait requirements
+
+`trait_requires` adds a concrete-type predicate to the runtime contract:
+
+```cpp
+static_trait(EnabledSource, Object, requires {
+    requires Object::enabled;
+});
+trait(Readable,
+    trait_requires(Self, EnabledSource<Self>),
+    trait_requires(Source, requires(const Source& source) {
+        { source.token() } -> std::same_as<int>;
+    }),
+    method(int, read, const)
+);
+```
+
+See the [README example](README.md#inline-trait-requirements) for native and mapped
+implementations. `Self` is a caller-chosen placeholder, not a keyword, macro,
+built-in alias, or associated type. Its scope is local to its predicate expression;
+`trait_requires(Object, std::copy_constructible<Object>)` is equally valid. Even
+`T` can be chosen independently of `associated_type(T)`. The placeholder does not
+enter method signatures and does not introduce general self-type rewriting.
+
+The placeholder denotes the cvref-unqualified concrete native type or mapped
+**source** type, not the mapping struct. `typename Self::Item` therefore requires
+that the concrete type actually expose `Item` (including through native interface
+inheritance); a mapping's `using Item = ...` alone does not supply it. Bare bound
+associated aliases are not in predicate scope.
+
+The variadic expression tail accepts commas, raw `requires` expressions, and
+`static_trait` concept reuse without extra protective parentheses. Multiple
+requirements are conjoined, and each consumes one of the existing eight descriptor
+slots, alongside associated types and methods. Predicate substitution failures
+yield `false` rather than a hard error. No predicate is evaluated while declaring
+an `implements` base for an incomplete native type.
+
+Validation is shared by the trait concept, factories (`borrow`, `adapt`, `box`),
+`trait_call`, and associated `trait_mapping_t`. The interface-or-valid-mapping
+checks still apply; a requirement alone does not make a structural implementation.
+Exact generated owning/reference adapters use hidden-friend ADL source tags to
+check the wrapped original type, rather than requiring the wrapper to reproduce
+its aliases, constants, or other concrete properties. Exact `dyn(...)` interfaces
+are exempt from concrete predicates: they represent the already-erased contract.
+
+Source tags are exact-type checks, not inherited exemptions. Derived native
+classes, including classes derived from generated adapters, recheck their own
+concrete predicates. Public inheritance and an explicit upcast to an accepted
+base or erased interface can nevertheless hide a failed concrete property. These
+compile-time checks are neither a security boundary nor a runtime/behavioral proof.
+
+Existing component concept conjunctions propagate requirements through
+`composed_trait`, and composition factories validate the original object before
+erasure. Raw mapped runtime multi-adaptation and associated-type composition
+remain unsupported. Fixed/default methods and the two concrete merge/clone shapes
+are unchanged and can coexist with requirements. Associated-type traits still
+support required methods only, not default or concrete operations.
+
 ### Interface or explicit-mapping contracts and exact signatures
 
-For every generated trait, `Name<T>` accepts the existing exact runtime-interface
-checks **or** a valid explicit `impl(Name, T)`. The interface branch uses
-`std::derived_from` plus explicit pointer-to-member casts for every descriptor.
+For every generated trait, `Name<T>` requires both its `trait_requires` predicates
+(with the exact-wrapper/interface rules above) and either the existing exact
+runtime-interface checks **or** a valid explicit `impl(Name, T)`. The interface
+branch uses `std::derived_from` plus explicit pointer-to-member casts for methods.
 That branch requires public, unambiguous interface inheritance; matching methods
 alone is insufficient. Private/ambiguous inheritance and incompatible hiding can
 fail that branch, though an independently valid mapping can satisfy the concept.
@@ -332,8 +394,8 @@ Const borrowing is supported for clone-only concrete traits whose fixed/default
 operations are all const. Any merge or mutable fixed operation forbids const
 borrowing. A const reference to an existing wrapper can still be a merge operand
 or clone source. Both shapes may coexist under arbitrary names with fixed and
-default methods within the shared eight-operation limit. No additional parameters,
-mutable merge operands, custom qualifiers, concrete default bodies, or general
+default methods and requirements within the shared eight-descriptor limit. No
+additional parameters, mutable merge operands, custom qualifiers, concrete default bodies, or general
 `Self` signature rewriting are supported.
 
 ### Default dispatch and optional-name detection
@@ -462,8 +524,9 @@ Composition boundaries:
 
 - Use 1–8 distinct ordinary runtime traits with simple unqualified component names
   visible at the declaration. Duplicate interfaces and nested compositions fail.
-- The concept conjunction can accept raw types with valid component mappings.
-  Runtime factories additionally require already-exposed component interfaces;
+- The concept conjunction propagates component requirements and can accept raw
+  types with valid component mappings. Runtime factories validate the original
+  object's component concepts and additionally require already-exposed interfaces;
   their `requires` constraints explicitly reject raw mapped sources rather than
   failing inside a factory body. There is no automatic multi-adaptation.
 - Bundles expose `.as<dyn(Component)>()`, not direct operation methods, and do not
@@ -520,7 +583,9 @@ do not reintroduce automatic concrete-type dispatch machinery through metadata.
 Examples should use inline `method`, `param`, and `default_method` descriptors,
 `concrete_method(name, merge)` and `concrete_method(name, clone)` for the two
 fixed mapped concrete contracts,
-`static_trait` for arbitrary constraints, and `composed_trait` for runtime bundles.
+`trait_requires(Placeholder, expression)` for inline concrete-type requirements,
+`static_trait` for reusable standalone constraints, and `composed_trait` for
+runtime bundles.
 Put conversions and argument transformations in mapping bodies. Use public
 keywords rather than generated names. Infer wrappers with `auto` or factory
 `decltype`. Interface descriptor changes may require synchronized updates to

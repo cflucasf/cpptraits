@@ -1,41 +1,34 @@
 # CppTraits
 
-**Rust-inspired traits for C++20, with explicit contracts and keyword-like macros.**
-Define an operation once, check implementations at compile time, and use the same
-contract for runtime polymorphism—without writing interface, concepts and adapter boilerplate.
+**Rust-inspired traits for C++20. Define a capability once; use it in generic code
+and at runtime.**
 
-CppTraits lets you:
+CppTraits is an experimental, single-header library that generates concepts,
+interfaces, and adapters from a shared declaration. It helps you:
 
-- Require capabilities in generic functions using concepts such as `Rotatable`.
-- Use runtime interfaces and heterogeneous collections through `dyn(Trait)`.
-- Implement traits for third-party and built-in types without modifying them.
-- Provide shared default methods, with native or external overrides.
-- Combine traits as compile-time constraints or runtime bundles.
-- Choose explicitly between borrowing, owning values, and boxed ownership.
+- Express what a function needs instead of which concrete class it accepts.
+- Give existing, third-party, and built-in types new capabilities.
+- Choose between compile-time calls and runtime polymorphism.
+- Share behavior, combine capabilities, and make ownership explicit.
 
-This is an experimental, header-only library, not a complete Rust trait system.
-The keyword spellings are deliberate global macros; no code generator or
-nonstandard language extension is required.
+Start with a trait below, or explore the [runnable examples](examples/README.md).
+You need C++20 and [`traits.hpp`](src/traits.hpp); no library binary or code generator.
 
 ## A first trait
+
+Declare the operations you need, then implement them with ordinary C++ methods:
 
 ```cpp
 #include <iostream>
 #include "traits.hpp"
 
 trait(Rotatable,
-    method(float, getRpm, const),
-    default_method(bool, isStopped, (), const, {
-        return getRpm() == 0.0f;
-    })
+    method(float, getRpm, const)
 );
 
 struct Motor : implements(Rotatable) {
     float rpm = 1400;
-
-    float getRpm() const override {
-        return rpm;
-    }
+    float getRpm() const override { return rpm; }
 };
 
 void printRpm(const Rotatable auto& object) {
@@ -44,346 +37,276 @@ void printRpm(const Rotatable auto& object) {
 
 int main() {
     Motor motor;
-    printRpm(motor);                    // 1400
-    std::cout << motor.isStopped();      // false (printed as 0)
+    printRpm(motor); // 1400
 }
 ```
 
-`implements(Rotatable)` opts into the contract through public interface inheritance.
-Matching method names alone do not satisfy the concept: `Rotatable<T>` accepts
-either the exact runtime interface checks or a valid explicit `impl(Rotatable, T)`.
-Required native methods use ordinary C++ `override`; default methods are inherited
-and can also be overridden. Concept constraints do not inject members: the
-`printRpm` body works only when its argument exposes `getRpm()`. Use a runtime
-adapter for a mapped type that does not. Calls through interface members retain
-normal C++ virtual-dispatch semantics.
+`Rotatable` is now a concept you can use in generic functions. `implements`
+provides the matching runtime interface, so the same implementation can also
+participate in virtual dispatch.[^contracts]
 
-## Declaring operations
+### Operations with parameters
 
-Use the short form for operations without parameters, and `param(Type, name)`
-for parameterized operations:
+Use `param(Type, name)` to declare arguments. Operations can be mutable, `const`,
+`noexcept`, or `const noexcept`:
 
 ```cpp
-#include <memory>
-#include <utility>
-
 trait(Adjustable,
-    method(float, getRpm, const),
+    method(float, getRpm, const noexcept),
     method(void, setRpm, (param(float, rpm)), ),
     method(void, reset, )
 );
+```
 
+Types containing commas can use an alias or an extra pair of parentheses:
+
+```cpp
 trait(Snapshots,
     method((std::pair<int, int>), snapshot, const),
-    method(void, restore,
-        (param((const std::pair<int, int>&), snapshot)), ),
-    method(void, consume, (param(std::unique_ptr<int>, value)), )
+    method(void, restore, (param((const std::pair<int, int>&), value)), )
 );
 ```
 
-- **Required operation:** `method(Return, name, qualifiers)` or
-  `method(Return, name, (param(...), ...), qualifiers)`.
-- **Concrete operation:** `concrete_method(name, merge)` or
-  `concrete_method(name, clone)`; see the runtime examples below for their fixed
-  signatures and mapping rules.
-- **Provided operation:** `default_method(Return, name, (param(...), ...), qualifiers, { body })`.
-  Always supply the parameter list; use `()` when it is empty.
-- For ordinary methods/defaults, leave qualifiers empty for mutable methods, or
-  use `const`, `noexcept`, or `const noexcept`.
-- Wrap the **entire type** in parentheses when its spelling contains commas.
-  Type aliases work too.
-- Adapters forward parameters according to their declared types: values as
-  rvalues, `T&` and `const T&` as lvalues, and `T&&` as rvalues.
+## Extend existing types
 
-Default bodies can call required operations or other defaults. These calls honor
-virtual overrides, including overrides supplied by external implementations.
-
-## Implementing without inheritance
-
-Use `impl` for your own plain types, third-party types, or built-in types without
-changing their layout or adding base classes. Using `Rotatable` from the first
-example, map a third-party type:
+Use `impl` to implement a trait **without changing the original type**. Mapping
+functions receive the object first, followed by the operation's arguments:
 
 ```cpp
-#include <cmath>
-#include <numbers>
-
 namespace vendor {
-    struct Motor {
-        double speed; // Radians per second; no trait inheritance.
-    };
+    struct Motor { double rpm; };
 }
 
 impl(Rotatable, vendor::Motor) {
     static float getRpm(const vendor::Motor& motor) {
-        return static_cast<float>(
-            motor.speed * 60.0 / (2.0 * std::numbers::pi));
-    }
-
-    // Optional: override the shared exact-zero default with a tolerance.
-    static bool isStopped(const vendor::Motor& motor) {
-        return std::abs(motor.speed) < 0.01;
-    }
-};
-```
-
-Static mapping functions take the external object first: `const T&` for const
-operations, `T&` for mutable operations, followed by the declared parameters.
-Supply every required operation with the declared parameter and return types,
-receiver constness, and exception specification. A `noexcept` mapping can implement
-a potentially throwing operation, but not the reverse.
-
-Omit a default method's name to use its shared body, or provide a matching function
-to override it. If several default overloads share that name, either omit the name
-entirely or provide every declared default overload; partial overrides are rejected.
-
-The external type stays unchanged and needs no inheritance. A valid explicit
-mapping makes `Rotatable<vendor::Motor>` true, just as interface-derived wrappers
-satisfy it. This adds no member functions or implicit conversion to `dyn(Rotatable)`:
-use a runtime adapter to call `getRpm()` or `isStopped()` through the interface.
-For example, `printRpm(borrow(Rotatable, source))` works, while `printRpm(source)`
-does not because the vendor type has no `getRpm()` member.
-
-To call a required operation uniformly on a native or mapped type, use
-`trait_call(Rotatable, getRpm, source)`. CppTraits infers the receiver type and
-selects the overload declared by the trait. Native implementations (including
-adapters and `dyn` references) call their member with virtual dispatch preserved;
-external types call the validated static mapping. If a type supports both paths,
-native members take precedence, including their associated-type bindings.
-No adapter is created, and the receiver expression is evaluated once.
-
-```cpp
-template<Rotatable T>
-float readRpm(const T& source) {
-    return trait_call(Rotatable, getRpm, source);
-}
-```
-
-This works with both fixed signatures and signatures that use associated types.
-Constness, reference returns, and `noexcept` follow the declared trait signature,
-not unrelated overloads or a stronger exception guarantee on an implementation.
-A const operation can be called on a const receiver even if other operations
-require mutation. Types must satisfy the native interface or mapping contract;
-merely having a same-named member does not enable `trait_call`.
-Only required operations are exposed: default and concrete operations still use
-the runtime interface. `trait_mapping_t` remains mapping-only.
-
-To map a family of class template specializations, pass the template declaration
-and target type as separate parenthesized arguments. For a vendor type
-`Motor<Speed, Channels>` that exposes an `rpm` field, the mapping can cover every
-positive channel count:
-
-```cpp
-impl(Rotatable,
-     (template<class Speed, std::size_t Channels> requires (Channels > 0)),
-     (vendor::Motor<Speed, Channels>)) {
-    static float getRpm(const vendor::Motor<Speed, Channels>& motor) {
         return static_cast<float>(motor.rpm);
     }
 };
+
+static_assert(Rotatable<vendor::Motor>);
 ```
 
-Include the mapping before the first concept check or adapter call for a matching
-type. A two-argument `impl(Rotatable, ConcreteType)` can specialize an individual
-type and takes precedence over a matching partial specialization.
-
-## Borrowing, owning, and runtime dispatch
+Built-in types work too:
 
 ```cpp
-vendor::Motor source{2.0 * std::numbers::pi};
-
-auto reference = borrow(Rotatable, source); // Borrows source.
-auto owned = adapt(Rotatable, source);       // Owns a copy.
-auto pointer = box(Rotatable, vendor::Motor{0}); // Owns through an interface pointer.
-
-source.speed = 0;
-reference.isStopped(); // true: observes source.
-owned.isStopped();     // false: retains its copied state.
-
-const dyn(Rotatable)& runtime = reference;
-printRpm(runtime);
-
-std::vector<std::unique_ptr<dyn(Rotatable)>> objects;
-objects.push_back(box(Rotatable, vendor::Motor{0}));
-objects.push_back(std::make_unique<Motor>());
-```
-
-Include `<vector>` and `<memory>` for the collection example.
-
-| Keyword | Meaning |
-| --- | --- |
-| `dyn(Trait)` | Names the runtime interface, without specifying ownership |
-| `borrow(Trait, object)` | Borrows an lvalue; the source must outlive the wrapper |
-| `adapt(Trait, object)` | Owns an adapted value; copies lvalues and moves rvalues |
-| `box(Trait, object)` | Owns an adapted value through `std::unique_ptr<dyn(Trait)>` |
-
-Use `std::move(object)` to transfer a move-only value into `adapt` or `box`.
-Borrowing temporaries is rejected. Ordinary trait factories use external `impl`
-mappings; native implementations already work as interface references and can be
-boxed with `std::make_unique`.
-
-Runtime participation is explicit: interfaces and adapters use ordinary virtual
-dispatch and carry polymorphic storage overhead. `adapt` and `borrow` do not
-themselves allocate; `box` explicitly allocates an owning adapter. Stored values
-and user operations may allocate independently. Compiler devirtualization is an
-optimization, not a blanket zero-overhead runtime guarantee.
-
-## Same-concrete-type runtime operations
-
-`concrete_method(name, shape)` selects one of two fixed contracts. The name is
-arbitrary; `merge` and `clone` select the shape, not the method name:
-
-| Descriptor | Exact static mapping | Generated runtime member |
-| --- | --- | --- |
-| `concrete_method(name, merge)` | `static void name(T&, const T&)` | `void name(const dyn(Trait)&)` (mutable receiver) |
-| `concrete_method(name, clone)` | `static T name(const T&)` | `std::unique_ptr<dyn(Trait)> name() const` |
-
-Both shapes require explicit `impl` mappings; `implements(Trait)` is disallowed
-for any trait containing either shape. A valid mapping makes the raw mapped type
-satisfy the trait concept, but injects no members or implicit interface conversion.
-Use an explicit runtime adapter for erased calls. Mapping functions are validated
-by exact function-pointer signatures: a clone must return `T`, not `T&`,
-`const T`, or a merely convertible type. Exceptions from user code propagate.
-
-### Merging the same mapped type
-
-Use the merge shape for a mutable receiver and one read-only operand:
-
-```cpp
-trait(Combinable, concrete_method(combine, merge));
-
-struct Total {
-    int amount;
-    void combine(const Total& other) { amount += other.amount; }
+impl(Rotatable, int) {
+    static float getRpm(const int& rpm) { return static_cast<float>(rpm); }
 };
+```
 
-impl(Combinable, Total) {
-    static void combine(Total& self, const Total& other) {
-        self.combine(other); // Delegate to the existing concrete API.
+### One call syntax for every implementation
+
+`trait_call` lets generic code work with native implementations, external
+mappings, and runtime adapters alike—without creating an adapter just to call an
+operation:[^calls]
+
+```cpp
+float readRpm(const Rotatable auto& source) {
+    return trait_call(Rotatable, getRpm, source);
+}
+
+readRpm(Motor{});             // Native member
+readRpm(vendor::Motor{900});  // External mapping
+readRpm(1200);                // Built-in type
+```
+
+You can also map an entire class-template family with a single `impl`, including
+a `requires` clause on the specialization. See the
+[class-template example](examples/class_template/main.cpp) and the associated-type
+mapping below.[^mappings]
+
+## Choose ownership and runtime dispatch
+
+Use the same trait when the concrete type is known only at runtime:
+
+| API | Use it when you want to… |
+| --- | --- |
+| `dyn(Trait)` | Name the runtime interface |
+| `borrow(Trait, object)` | Work with the original object without copying it |
+| `adapt(Trait, object)` | Own a copy of an lvalue or move in an rvalue |
+| `box(Trait, object)` | Own an adapted value through a `std::unique_ptr` |
+
+```cpp
+vendor::Motor source{900};
+
+auto view  = borrow(Rotatable, source);
+auto owned = adapt(Rotatable, source);
+auto boxed = box(Rotatable, vendor::Motor{1200});
+
+source.rpm = 0;
+view.getRpm();  // 0: observes source
+owned.getRpm(); // 900: independent copy
+
+const dyn(Rotatable)& runtime = view;
+printRpm(runtime);
+```
+
+Borrowing does not extend the source's lifetime. Ordinary trait factories use
+`impl` mappings; native objects already expose their interfaces.[^ownership]
+
+For heterogeneous collections, store interface pointers:
+
+```cpp
+std::vector<std::unique_ptr<dyn(Rotatable)>> motors;
+motors.push_back(std::make_unique<Motor>());
+motors.push_back(box(Rotatable, vendor::Motor{900}));
+
+for (const auto& motor : motors) {
+    printRpm(*motor);
+}
+```
+
+## Share default behavior
+
+`default_method` supplies behavior once for every implementation. Its body can
+call other trait operations, so implementations only need to provide the
+building blocks:
+
+```cpp
+trait(Stoppable,
+    method(float, getRpm, const),
+    default_method(bool, isStopped, (), const, {
+        return getRpm() == 0.0f;
+    })
+);
+
+impl(Stoppable, vendor::Motor) {
+    static float getRpm(const vendor::Motor& motor) {
+        return static_cast<float>(motor.rpm);
     }
 };
 
-Total source{10};
-auto receiver = borrow(Combinable, source);
-auto owned = adapt(Combinable, Total{20});
-auto boxed = box(Combinable, Total{30});
-
-const dyn(Combinable)& operand = owned;
-receiver.combine(operand); // source.amount == 30
-receiver.combine(*boxed);  // source.amount == 60
-owned.combine(receiver);  // owned value is now 80; source is unchanged.
+vendor::Motor stopped{0};
+auto motor = borrow(Stoppable, stopped);
+motor.isStopped(); // true: uses the shared default
 ```
 
-The generated interface operation is `void combine(const dyn(Combinable)&)` on
-a **mutable receiver**. The mapping must provide
-`static void combine(T&, const T&)`. Borrowed, owning, and boxed adapters for the
-same underlying `T` interoperate; wrapper/storage type does not determine the
-match. A valid mapping makes `Combinable<Total>` true under the same concept rule
-as fixed-signature traits. Raw objects remain unchanged: they do not implicitly
-convert to runtime operands or gain interface member functions. A class may keep
-its concrete method, as above; the mapping delegates to it. `implements(Combinable)`
-is unsupported for a trait with a concrete marker: use an explicit `impl` and
-adapters for runtime calls.
+Native types can override the member; mappings can provide a matching static
+function instead. Calls inside default bodies honor those overrides.[^defaults]
 
-A different underlying mapped operand type throws `std::invalid_argument`
-**before the mapping is called**. Exceptions thrown by user code propagate
-unchanged. A const object cannot be borrowed as a receiver for this mutable
-contract. A `const dyn(Combinable)&` referring to an existing wrapper created
-from a mutable object is valid as the read-only operand.
+## Express compile-time requirements
 
-Merge requires RTTI for the same-underlying-type check. A trait containing any
-merge operation cannot borrow a const object, even if it also contains clone
-operations. An existing wrapper may still be viewed through a const reference
-and used as a merge operand or clone source.
-
-### Cloning into an owning runtime object
+Use `static_trait` when you only need a concept, without an interface or adapters.
+It accepts ordinary C++20 constraints, including checks on members, associated
+types, and concrete return types:
 
 ```cpp
-trait(Cloneable, concrete_method(duplicate, clone));
-
-impl(Cloneable, Total) {
-    static Total duplicate(const Total& self) { return self; }
-};
-
-const Total source{10};
-auto reference = borrow(Cloneable, source);
-const dyn(Cloneable)& runtime = reference;
-std::unique_ptr<dyn(Cloneable)> copy = runtime.duplicate();
-auto another = copy->duplicate();
-```
-
-Every clone owns a new raw, unqualified `T`, even when its source is borrowed or
-const; the library wraps the returned value, not a copy of the borrowing wrapper.
-Whether the new value shares resources or references with the source depends on
-`T` and the mapping: cloning does not automatically perform a deep copy. The result
-preserves the **whole same trait interface**, including any other clone, merge,
-fixed, or default operations, rather than a reduced clone-only interface. The raw
-`T` must satisfy `std::move_constructible` so the returned value can be stored in
-an owning adapter. Cloning allocates a new owning adapter containing both payload
-and interface in one library allocation, with no second library allocation;
-the payload and user mapping may allocate independently.
-
-A clone-only trait needs no RTTI and works with `-fno-rtti`; adding a merge shape
-requires RTTI. Const borrowing is supported when all fixed/default operations
-are const and the concrete operations are clone-only. Mutable fixed operations
-still require a mutable source.
-
-Both concrete shapes may coexist, under arbitrary names, with ordinary `method`
-and `default_method` operations. All count toward the same **8-operation total**.
-These are small fixed-shape generators, not general runtime `Self` machinery:
-there are no extra parameters, custom qualifiers, mutable merge operands, or
-concrete default bodies.
-
-## Static concrete-type contracts
-
-Use `static_trait` for general operations whose signatures depend on the concrete
-type, including concrete return values, without runtime erasure:
-
-```cpp
-static_trait(StaticCombinable, T, requires(T& object, const T& other) {
-    { object.combine(other) } -> std::same_as<void>;
-});
 static_trait(StaticCloneable, T, requires(const T& object) {
     { object.clone() } -> std::same_as<T>;
 });
 
 struct Value {
     int amount;
-
-    void combine(const Value& other) { amount += other.amount; }
     Value clone() const { return *this; }
 };
 
-static_assert(StaticCombinable<Value>);
 static_assert(StaticCloneable<Value>);
-
-template<StaticCombinable T>
-void combine(T& object, const T& other) {
-    object.combine(other);
-}
-
-Value first{10}, second{20};
-combine(first, second); // One deduced T: both operands have the same type.
-Value copy = first.clone();
 ```
 
-These are ordinary C++20 expression constraints: plain objects can satisfy them
-without inheritance, adapters, or runtime machinery. They check the expressions
-and their result types, not an exact pointer-to-member signature. No runtime
-interface or factories are generated for these static traits. The runtime
-`concrete_method` marker above is a separate, explicit narrow contract, not
-automatic runtime `Self` signature rewriting.
+Plain types can satisfy these requirements without opting into a runtime trait.
+You can also combine existing concepts:
 
-A type can independently implement runtime traits and satisfy static contracts.
-`StaticCloneable` checks a concrete member call; runtime `Cloneable` checks an
-explicit trait implementation and provides owning erased clones. Compare the
-self-contained [static contracts example](examples/static_traits/main.cpp) with
-the [runtime concrete operations example](examples/concrete_methods/main.cpp).
-Concrete members remain ordinary C++ methods; erased calls use adapters.
+```cpp
+static_trait(CopyableRotation, T, Rotatable<T> && std::copy_constructible<T>);
+```
 
-## Combining capabilities
+## Inline trait requirements
 
-Use `composed_trait` when you want both a concept and a runtime bundle:
+Use `trait_requires` when a runtime trait should also restrict its concrete
+implementations. Reuse a `static_trait` or write a constraint directly:
+
+```cpp
+static_trait(Copyable, T, std::copy_constructible<T>);
+
+trait(CopyableRotatable,
+    trait_requires(Self, Copyable<Self>),
+    method(float, getRpm, const)
+);
+
+struct CopyableMotor : implements(CopyableRotatable) {
+    float getRpm() const override { return 1400; }
+};
+
+impl(CopyableRotatable, int) {
+    static float getRpm(const int& rpm) { return static_cast<float>(rpm); }
+};
+
+static_assert(CopyableRotatable<CopyableMotor>);
+static_assert(CopyableRotatable<int>);
+```
+
+The additional requirement applies to native types and external mappings, and
+follows them through factories, `trait_call`, and composition. Multiple clauses
+must all hold.
+
+**`Self` is a name you choose—not a keyword, macro, or predefined alias.** It
+represents the concrete object type inside that constraint; `Object` or `T`
+would work just as well.[^requirements]
+
+See the [calibrated-sensor example](examples/trait_requires/main.cpp) for accepted
+and rejected types, adapters, and composition.
+
+## Let implementations choose associated types
+
+`associated_type` lets each implementation supply types shared by its operations.
+For example, an iterator chooses the kind of item it produces:
+
+```cpp
+trait(Iterator,
+    associated_type(Item),
+    method(std::optional<Item>, next, )
+);
+
+struct Counter : implements(Iterator, int) {
+    int current = 0;
+
+    std::optional<int> next() override {
+        if (current == 3) return std::nullopt;
+        return current++;
+    }
+};
+```
+
+`implements(Iterator, int)` binds `Item` to `int`. External mappings supply the
+alias themselves; this template mapping adapts a standard-library cursor with
+copyable items:
+
+```cpp
+impl(Iterator, (template<class T>), (std::span<const T>)) {
+    using Item = T;
+
+    static std::optional<Item> next(std::span<const T>& cursor) {
+        if (cursor.empty()) return std::nullopt;
+        Item item = cursor.front();
+        cursor = cursor.subspan(1);
+        return item;
+    }
+};
+
+const std::array numbers{10, 20};
+std::span<const int> cursor{numbers};
+auto view = borrow(Iterator, cursor);
+view.next(); // 10
+
+std::unique_ptr<dyn(Iterator, int)> owned = box(Iterator, cursor);
+owned->next(); // 20
+```
+
+Factories infer associated types from the mapping. `dyn(Iterator, int)` names the
+bound interface; multiple bindings follow declaration order.[^associated]
+When generic code needs a mapping's aliases, `trait_mapping_t` exposes them:
+
+```cpp
+using Item = typename trait_mapping_t(Iterator, std::span<const int>)::Item;
+```
+
+Explore [associated iterators](examples/associated_types/main.cpp) or a
+[read-only `Iterable` mapping for `std::vector`](examples/iterable/main.cpp).
+
+## Combine capabilities
+
+`composed_trait` groups capabilities into one generic constraint and a runtime
+bundle. Use it when an operation needs more than one trait:
 
 ```cpp
 trait(Powerable, method(float, getPower, const));
@@ -394,244 +317,193 @@ struct PoweredMotor : Motor, implements(Powerable) {
 };
 
 void inspect(const PoweredRotatable auto& object) {
-    std::cout << object.getRpm() << ' ' << object.getPower() << '\n';
+    std::cout << trait_call(Rotatable, getRpm, object) << ' '
+              << trait_call(Powerable, getPower, object) << '\n';
 }
 ```
 
-The concept is a conjunction of the component concepts, so raw types with valid
-mappings for both components can satisfy it. The `inspect` body still needs the
-original type to expose both called members; concept satisfaction does not add
-them. Use wrappers exposing the needed interfaces when those members are absent.
-Runtime bundles select a component explicitly rather than duplicating its methods:
+At runtime, select a component with `as<Interface>()`. All components refer to the
+same underlying object:
 
 ```cpp
-PoweredMotor powered;
-inspect(powered);
+PoweredMotor motor;
+inspect(motor);
 
-auto capabilities = borrow(PoweredRotatable, powered);
+auto capabilities = borrow(PoweredRotatable, motor);
 capabilities.as<dyn(Rotatable)>().getRpm();
 capabilities.as<dyn(Powerable)>().getPower();
 
-auto ownedCapabilities = adapt(PoweredRotatable, powered);
-auto boxedCapabilities = box(PoweredRotatable, PoweredMotor{});
-boxedCapabilities->as<dyn(Rotatable)>().isStopped();
+auto owned = adapt(PoweredRotatable, motor);
+auto boxed = box(PoweredRotatable, PoweredMotor{});
 ```
 
-All selected interfaces refer to one underlying object. Composition factories
-require sources that already expose every component runtime interface, not just
-satisfy the concept conjunction. Their `requires` constraints reject sources
-that only provide mappings; there is no automatic multi-adaptation. Bundles are
-runtime handles and do not automatically satisfy the component concepts.
+Component `trait_requires` clauses are inherited by the composed concept.
+Runtime bundles currently bind existing component interfaces.[^composition]
 
-For compile-time-only requirements, use `static_trait` with any C++20 constraint:
+## Clone and merge through runtime interfaces
 
-```cpp
-static_trait(HasRotationAndPower, T, Rotatable<T> && Powerable<T>);
-static_trait(CopyableRotation, T, Rotatable<T> && std::copyable<T>);
-```
-
-Static traits can also check associated types, constants, static operations, and
-`requires` expressions. They do not generate runtime interfaces or factories.
-
-## Associated types
-
-An associated type lets an implementation supply one type shared by several operations.
-In this iterator, `peek()` borrows the current item without advancing, while
-`next()` returns an item by value and advances. Both operations must use the
-same `Item`.
+`concrete_method` bridges two common operations that depend on the concrete type:
+**cloning an owned value** and **merging values of the same type**. The caller
+only needs the runtime interface:
 
 ```cpp
-trait(Iterator,
-    associated_type(Item),
-    method(const Item*, peek, const noexcept),
-    method(std::optional<Item>, next, )
+trait(EditableTotal,
+    method(int, amount, const),
+    concrete_method(combine, merge),
+    concrete_method(duplicate, clone)
 );
 
-template<class T>
-struct ArrayIter : implements(Iterator, T) {
-    const T* peek() const noexcept override;
-    std::optional<T> next() override;
+struct Total { int value; };
+
+impl(EditableTotal, Total) {
+    static int amount(const Total& total) { return total.value; }
+    static void combine(Total& total, const Total& other) {
+        total.value += other.value;
+    }
+    static Total duplicate(const Total& total) { return total; }
 };
+
+Total total{10};
+auto view = borrow(EditableTotal, total);
+auto other = box(EditableTotal, Total{20});
+view.combine(*other); // total.value == 30
+
+auto copy = view.duplicate(); // unique_ptr<dyn(EditableTotal)>
+total.value = 0;
+copy->amount(); // 30: owns a separate Total
 ```
 
-`implements(Iterator, T)` binds `Item` to `T` in the interface and makes the
-alias available as `ArrayIter<T>::Item`. With multiple associated types, pass their
-bindings in declaration order. Call `iter.peek()` and `iter.next()` as ordinary
-members. See the [runnable iterator example](examples/associated_types/main.cpp).
+The operation names are yours to choose; `merge` and `clone` select their shapes.
+Clones retain the whole trait interface, and borrowed, owned, and boxed merge
+operands interoperate when they wrap the same concrete type.[^concrete]
 
-An external `impl` supplies `using Item = T;` in its mapping. CppTraits checks
-that the alias is public and that both static functions match after substituting it.
-For example, a mapping with `Item = int` is rejected if `peek()` returns
-`const double*`, even if `next()` correctly returns `std::optional<int>`.
+## Explore the examples
 
-Native and external iterators can both be called with
-`trait_call(Iterator, next, cursor)`.
-Use `trait_mapping_t(Iterator, I)` when you need the validated mapping type
-itself, for example to read its `Item` alias:
+Each example is a self-contained program with a runtime result check.
 
-```cpp
-template<Iterator I>
-using mapped_item_t = typename trait_mapping_t(Iterator, I)::Item;
-```
-
-Mapped implementations also support `borrow`, `adapt`, and `box`. The factories
-infer associated types from the mapping. Use `dyn(Iterator, int)` to name the
-runtime interface with `Item = int`; multiple bindings follow declaration order.
-Different bindings produce distinct interface types.
-
-```cpp
-auto borrowed = borrow(Iterator, cursor); // Shares cursor's state; lvalues only.
-auto owned = adapt(Iterator, cursor);     // Copies cursor; moves an rvalue.
-std::unique_ptr<dyn(Iterator, int)> boxed = box(Iterator, cursor);
-std::optional<int> item = boxed->next();
-```
-
-As with fixed-interface traits, these factories require an `impl` mapping.
-Borrowing preserves the source's constness: a const source is accepted only when
-all required operations have const receivers. Borrowing neither allocates nor
-extends the source's lifetime; `adapt` and `box` own their stored values.
-Traits with associated types still support only required `method(...)`
-descriptors, not default or concrete operations or runtime composition.
-
-## Supported scope
-
-- Up to **8 descriptors per trait** (methods and associated type declarations),
-  **8 parameters per ordinary operation**, and **8 distinct
-  ordinary traits per composition**. Nested runtime compositions are not supported.
-- Ref-qualified and volatile operations are not supported by external adapters.
-  Use aliases for complex declarators such as function-pointer types; parameter
-  defaults and unnamed parameters are not supported.
-- Borrowed objects must outlive every wrapper/reference to them. Const composed
-  borrowing produces a read-only view; use `auto` to preserve its type.
-- Use normal, non-`final` external mapping structs when relying on default fallback.
-- Constraint checks do not cover every malformed mapping or competing required-method
-  overload set. Keep mapping calls unambiguous and borrow const objects only for
-  read-only traits; see [the development guide](DEVELOPMENT.md) for known edge cases.
-- Global keyword macro names are part of the library's opinionated API and may
-  conflict with other libraries. The current implementation has been tested with
-  GCC; cross-compiler portability validation is still pending.
-
-## Focused examples
-
-Each example is self-contained and includes only `traits.hpp` from the library.
-See the [examples index](examples/README.md) for more guidance.
-
-| Example | Focus |
+| Example | What it shows |
 | --- | --- |
-| [basic](examples/basic/main.cpp) | Declare a trait and implement its native interface |
-| [external_mapping](examples/external_mapping/main.cpp) | Map an unchanged external type with `impl` |
-| [ownership](examples/ownership/main.cpp) | Borrow, own, and box adapted values |
-| [defaults](examples/defaults/main.cpp) | Shared default methods and overrides |
-| [static_traits](examples/static_traits/main.cpp) | Compile-time concrete-type contracts |
-| [composition](examples/composition/main.cpp) | Combine capabilities and select runtime interfaces |
-| [concrete_methods](examples/concrete_methods/main.cpp) | Same-type merge and owning runtime clone operations |
-| [class_template](examples/class_template/main.cpp) | One constrained mapping for a class template |
-| [associated_types](examples/associated_types/main.cpp) | Native and mapped iterators with associated item types and runtime adapters |
-| [iterable](examples/iterable/main.cpp) | Extend `std::vector` with a read-only `Iterable` trait and runtime adapters |
+| [basic](examples/basic/main.cpp) | A native trait implementation |
+| [external_mapping](examples/external_mapping/main.cpp) | Extending an unchanged external type |
+| [class_template](examples/class_template/main.cpp) | One mapping for a template family |
+| [ownership](examples/ownership/main.cpp) | Borrowed values, owned values, and heterogeneous collections |
+| [defaults](examples/defaults/main.cpp) | Shared behavior and implementation-specific overrides |
+| [static_traits](examples/static_traits/main.cpp) | Compile-time-only contracts |
+| [trait_requires](examples/trait_requires/main.cpp) | Extra requirements on runtime implementations |
+| [associated_types](examples/associated_types/main.cpp) | Native and mapped iterators with associated item types |
+| [iterable](examples/iterable/main.cpp) | Extending `std::vector` with read-only iteration |
+| [composition](examples/composition/main.cpp) | Multiple capabilities on one object |
+| [concrete_methods](examples/concrete_methods/main.cpp) | Runtime merge and owning clone operations |
 
-## Build and run this repository
-
-The example/test build requires a C++20-capable compiler, CMake 3.21+, and Ninja.
-Bash is needed only for the convenience scripts. From the repository root:
+Build and run from the repository root:
 
 ```sh
 ./build.sh
-./run.sh                       # Defaults to basic.
-./run.sh ownership             # Select an example.
+./run.sh trait_requires         # Or basic, ownership, iterable, ...
 ./run.sh --list
-./run.sh --help
 ```
 
-Or use CMake directly:
+Or use CMake directly (CMake 3.21+ and Ninja):
 
 ```sh
 cmake --preset debug
 cmake --build --preset debug
-./build/debug/examples/basic
 ctest --preset debug
 ```
 
-`./run.sh [name] [args...]` runs a previously built Debug example and forwards
-remaining arguments to it; unknown names are rejected. `build.sh` configures and
-builds the Debug preset. CMake example targets are named `cpptraits_example_NAME`
-(for example, `cpptraits_example_ownership`); Debug executables are placed in
-`build/debug/examples/NAME`.
-
-Replace `debug` with `release` in the CMake commands and executable path for an
-optimized build. On Windows, use the corresponding `.exe` executable; MSVC
-requires a configured developer shell.
-
-For a top-level build, `CPPTRAITS_BUILD_EXAMPLES` and `CPPTRAITS_BUILD_TESTS`
-default to ON. Standard `BUILD_TESTING` controls CTest registration and gates the
-dedicated tests; examples can still build with it OFF.
-`CPPTRAITS_TEST_CLONE_NO_RTTI=ON` enables an additional test for clone-only traits
-with RTTI disabled.
+Use the `release` preset for an optimized build. More commands and contributor
+workflows are in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Use CppTraits in your project
 
-CppTraits is a single-header library. For direct integration, copy only
-`src/traits.hpp`, add its directory to your include path, and compile as C++20
-or newer:
+Copy `src/traits.hpp` into your project and compile as C++20 or newer. Include
+standard and third-party headers **before** `traits.hpp`, because its global
+keyword macros can collide with names in other headers.[^scope]
 
-```cpp
-#include "traits.hpp"
-```
+The snippets above build on earlier declarations and omit supporting includes
+after the first example. The [example programs](examples/README.md) show complete
+include lists.
 
-In complete programs, include required standard and third-party headers **before**
-`traits.hpp`. Its global keyword macros, such as `param`, can collide with
-names declared by headers included later. The snippets above are fragments;
-combine their required includes at the top of your source file.
-
-For example, after vendoring this repository at `third_party/CppTraits`, configure
-an existing CMake executable target:
+If you vendor the repository, CMake integration is:
 
 ```cmake
 add_subdirectory(third_party/CppTraits)
 target_link_libraries(my_app PRIVATE CppTraits::CppTraits)
 ```
 
-The `CppTraits::CppTraits` alias names the header-only `cpptraits` INTERFACE
-target, which supplies the build-tree include directory and C++20 requirement.
-Repository warning flags are private to its own executables, not propagated to
-consumers. Both `CPPTRAITS_BUILD_EXAMPLES` and `CPPTRAITS_BUILD_TESTS` default to
-OFF when included with `add_subdirectory`, so consumers do not build them by
-default. This is build-tree integration; no install/export package is provided.
-
-Or compile directly:
+The target supplies the include path and C++20 requirement. Examples and tests
+are off by default when included as a subproject. Alternatively, compile directly:
 
 ```sh
 c++ -std=c++20 -I third_party/CppTraits/src main.cpp -o my_app
 ```
 
-Place trait declarations and shared mappings in guarded headers. Namespaced traits
-work with qualified keywords, for example `dyn(app::Rotatable)` and
-`borrow(app::Rotatable, object)`. Declare `impl` specializations in the trait's
-namespace or an enclosing namespace, not an unrelated namespace.
-
-No library binary needs linking: integration consists of including `traits.hpp`
-and enabling C++20. The [focused examples](examples/README.md) are the starting
-point for usage; headers under `tests/fixtures/` exist only for regression tests
-and are not required by consumers.
-
-For implementation details, the roadmap, and contributor workflows, see
-[DEVELOPMENT.md](DEVELOPMENT.md).
-
 ## AI usage disclaimer
 
-CppTraits is AI-assisted, not "vibe-coded." Its contracts and implementation
-machinery were established through iterative design, implementation, and testing
-to complete the intended feature set within the library's current scope — not by
-accepting generated code without understanding or validating it.
+CppTraits is AI-assisted, not "vibe-coded." AI has helped develop the macro
+machinery, tests, and safeguards through iterative design and validation—not as
+a replacement for understanding the code or exercising engineering judgment.
+Tests support the documented behavior; they do not guarantee correctness for
+every compiler, lifetime pattern, or unsupported use.
 
-AI was used to help:
+## Notes and current limits
 
-- Implement and expand the test suite, including regression and rejection cases.
-- Generate and refine the macro machinery supporting the public API.
-- Strengthen compile-time checks, ownership handling, and runtime usage safety.
-- Identify unintended usage and add safeguards around unsupported operations and
-  the boundaries of the documented contracts.
+These notes collect the practical caveats; detailed contracts and implementation
+boundaries live in [DEVELOPMENT.md](DEVELOPMENT.md).
 
-AI assistance does not replace engineering judgment, code understanding, or
-validation. Tests and safeguards support the documented behavior; they are not a
-guarantee of correctness or safety for every compiler, lifetime pattern, or use
-outside the supported scope.
+[^contracts]: Runtime traits require an explicit `implements` or valid `impl` mapping;
+    matching member names alone is not enough. A mapping adds neither members nor
+    implicit interface conversions to the original type.
+
+[^calls]: `trait_call` exposes required operations only; use interface members for
+    default and concrete operations. Native implementations take precedence over
+    mappings. Declared overloads, reference returns, and `noexcept` are preserved;
+    native calls retain virtual dispatch.
+
+[^mappings]: Declare mappings before checking or adapting their types, in the
+    trait's namespace or an enclosing namespace. Mapping signatures must match the
+    declared operation, with `const T&` for const receivers and `T&` for mutable
+    receivers. See [template mapping examples](examples/class_template/main.cpp).
+
+[^ownership]: `borrow` accepts lvalues only; the source must outlive every view.
+    Const sources need read-only operations. `adapt` and `box` copy lvalues or move
+    rvalues; ownership of a value does not imply ownership of everything it refers
+    to. `borrow` and `adapt` do not themselves allocate; `box` does. Runtime interfaces
+    use ordinary C++ virtual dispatch. Native values can be owned directly with
+    `std::make_unique<Concrete>()`.
+
+[^defaults]: To use a mapped default, omit its name entirely or provide all declared
+    overloads of that name. Prefer non-`final` mapping structs when relying on default
+    fallback. Default bodies always receive an explicit parameter list, including `()`.
+
+[^requirements]: `Self` denotes the cv/ref-unqualified concrete source type, not its
+    mapping or an object instance; its scope is local to the constraint. Generated
+    adapters check their source type; exact `dyn` interfaces carry the erased
+    contract instead. Derived types recheck their own predicates, but upcasting can
+    erase concrete properties. Constraints are not a runtime proof. See
+    [requirement semantics](DEVELOPMENT.md#inline-trait-requirements).
+
+[^associated]: Associated-type traits support required methods and `trait_requires`,
+    but not defaults, concrete merge/clone, or runtime composition yet.
+    `trait_mapping_t` is mapping-only; an alias declared solely in a mapping does
+    not become a member of the original type.
+
+[^composition]: Runtime composition currently needs public, unambiguous component
+    interface bases. Raw mapped types can satisfy the composed concept, but factories
+    do not build component adapters automatically. Associated-type components and
+    nested runtime bundles are not supported. Const borrowing gives a read-only view.
+
+[^concrete]: Concrete operations require `impl` mappings rather than `implements`.
+    Merge expects `void(T&, const T&)`, requires RTTI, and throws
+    `std::invalid_argument` for different underlying types. Clone expects `T(const T&)`
+    and returns a newly allocated owning adapter; copying resources follows the mapping,
+    not an automatic deep-copy policy. Clone-only traits do not require RTTI.
+
+[^scope]: The bounded macros support eight descriptors per trait (including types
+    and requirements), eight parameters per ordinary operation, and eight distinct
+    ordinary components per composition. External adapters do not support volatile
+    or ref-qualified operations. Some malformed mappings and competing overloads
+    remain outside constraint-level rejection coverage. GCC has been tested;
+    cross-compiler validation is pending. These keyword spellings are global macros,
+    not language extensions. For advanced declarators and edge cases, see the
+    [development guide](DEVELOPMENT.md).
